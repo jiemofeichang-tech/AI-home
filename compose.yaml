@@ -1,0 +1,92 @@
+name: ai-community
+x-app-env: &app-env
+  APP_URL: ${APP_URL:?Set the public site URL}
+  PGHOST: ${PGHOST:-db}
+  PGPORT: ${PGPORT:-5432}
+  PGDATABASE: ${PGDATABASE:-community}
+  PGUSER: ${PGUSER:-community}
+  PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set a random secret}
+  DEV_MODE: "false"
+  REDIS_URL: redis://redis:6379
+  MEILI_URL: http://search:7700
+  MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?Set a random search key}
+  STORAGE_DRIVER: oss
+  OSS_REGION: ${OSS_REGION:-oss-cn-hangzhou}
+  OSS_BUCKET: ${OSS_BUCKET:?Set OSS_BUCKET}
+  ALI_ACCESS_KEY_ID: ${ALI_ACCESS_KEY_ID:?Set the cloud key}
+  ALI_ACCESS_KEY_SECRET: ${ALI_ACCESS_KEY_SECRET:?Set the cloud secret}
+  SMS_SIGN_NAME: ${SMS_SIGN_NAME:?Set the approved SMS signature}
+  SMS_TEMPLATE_CODE: ${SMS_TEMPLATE_CODE:?Set the SMS template}
+  DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?Set the image service key}
+  DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-qwen-vl-plus}
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  ADMIN_PHONE: ${ADMIN_PHONE:?Set the initial administrator phone}
+  BACKUP_DIR: /app/backups
+  AUTH_IP_HEADER: x-real-ip
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+  AI_MONTHLY_IMAGE_LIMIT: ${AI_MONTHLY_IMAGE_LIMIT:-1000}
+  USER_DAILY_IMAGE_LIMIT: ${USER_DAILY_IMAGE_LIMIT:-20}
+  SMS_DAILY_LIMIT: ${SMS_DAILY_LIMIT:-100}
+services:
+  web:
+    build: {context: ., target: app}
+    environment: *app-env
+    ports: ["127.0.0.1:3100:3100"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+  worker:
+    build: {context: ., target: jobs}
+    environment: *app-env
+    volumes: ["backup-data:/app/backups"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+      search: {condition: service_started}
+    restart: unless-stopped
+  migrate:
+    build: {context: ., target: jobs}
+    environment: *app-env
+    command: ["npm", "run", "db:migrate"]
+    depends_on:
+      db: {condition: service_healthy}
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: community
+      POSTGRES_DB: community
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U community -d community"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+  search:
+    image: getmeili/meilisearch:v1.54.0
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?Set search key}
+      MEILI_ENV: production
+      MEILI_NO_ANALYTICS: "true"
+    volumes: ["search-data:/meili_data"]
+    restart: unless-stopped
+volumes:
+  postgres-data:
+  redis-data:
+  search-data:
+  backup-data:
