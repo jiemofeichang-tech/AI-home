@@ -1,0 +1,57 @@
+# Use together with compose.yaml; never as a standalone deployment.
+# Steady-state limits total 1504 MiB. Migrations run while web/worker are stopped.
+x-small-logging: &small-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  web:
+    platform: linux/amd64
+    image: ${COMMUNITY_WEB_IMAGE:-ai-community-web:small}
+    mem_limit: 512m
+    environment:
+      NODE_OPTIONS: --max-old-space-size=256
+      DB_POOL_SIZE: "3"
+      IMAGE_UPLOAD_CONCURRENCY: "1"
+      IMAGE_MAX_PIXELS: "12000000"
+      IMAGE_MAX_ANIMATION_FRAMES: "60"
+      IMAGE_MAX_ANIMATION_PIXELS: "12000000"
+    logging: *small-logging
+  worker:
+    platform: linux/amd64
+    image: ${COMMUNITY_JOBS_IMAGE:-ai-community-jobs:small}
+    mem_limit: 384m
+    environment:
+      NODE_OPTIONS: --max-old-space-size=192
+      DB_POOL_SIZE: "3"
+      WORKER_CONCURRENCY: "1"
+    logging: *small-logging
+  migrate:
+    platform: linux/amd64
+    image: ${COMMUNITY_JOBS_IMAGE:-ai-community-jobs:small}
+    mem_limit: 384m
+    environment:
+      NODE_OPTIONS: --max-old-space-size=256
+      DB_POOL_SIZE: "3"
+    logging: *small-logging
+  db:
+    platform: linux/amd64
+    mem_limit: 256m
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=20", "-c", "work_mem=2MB", "-c", "maintenance_work_mem=32MB", "-c", "max_parallel_workers_per_gather=0"]
+    logging: *small-logging
+  redis:
+    platform: linux/amd64
+    mem_limit: 96m
+    # Leave space for AOF buffers/rewrite overhead; never evict queue entries.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "32mb", "--maxmemory-policy", "noeviction"]
+    logging: *small-logging
+  search:
+    platform: linux/amd64
+    mem_limit: 256m
+    environment:
+      # Bytes: 64 MiB for indexing; this is not a cap on total process memory.
+      MEILI_MAX_INDEXING_MEMORY: "67108864"
+      MEILI_MAX_INDEXING_THREADS: "1"
+    logging: *small-logging

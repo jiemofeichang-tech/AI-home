@@ -1,4 +1,3 @@
-import { createHmac,randomUUID } from 'node:crypto';
 import { request as httpsRequest } from 'node:https';
 import { request as httpRequest } from 'node:http';
 import { lookup } from 'node:dns/promises';
@@ -6,6 +5,7 @@ import { isIP } from 'node:net';
 import { query } from './db';
 import { config } from './config';
 import { fail } from '../shared/contracts';
+import { sendSmsMessage } from './sms';
 export async function consumeQuota(key:string,limit:number) {
   const rows=await query(`INSERT INTO usage_counters(key,count) VALUES($1,1) ON CONFLICT(key) DO UPDATE SET count=usage_counters.count+1,updated_at=now() WHERE usage_counters.count<$2 RETURNING count`,[key,limit]);
   if(!rows.length) fail(429,'当前处理额度已用完，请稍后重试','QUOTA_EXCEEDED');
@@ -17,14 +17,7 @@ export async function sendSms(phone:string,code:string) {
   if(config.dev) {
     await query(`INSERT INTO usage_counters(key,count) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET count=$2,updated_at=now()`,[`dev-otp:${phone}`,Number(code)]);return;
   }
-  const key=process.env.ALI_ACCESS_KEY_ID,secret=process.env.ALI_ACCESS_KEY_SECRET;
-  if(!key||!secret||!process.env.SMS_SIGN_NAME||!process.env.SMS_TEMPLATE_CODE) throw new Error('SMS provider is not configured');
-  const params:Record<string,string>={AccessKeyId:key,Action:'SendSms',Format:'JSON',Version:'2017-05-25',RegionId:'cn-hangzhou',SignatureMethod:'HMAC-SHA1',SignatureVersion:'1.0',SignatureNonce:randomUUID(),Timestamp:new Date().toISOString().replace(/\.\d{3}Z$/,'Z'),PhoneNumbers:phone.replace(/^\+86/,''),SignName:process.env.SMS_SIGN_NAME,TemplateCode:process.env.SMS_TEMPLATE_CODE,TemplateParam:JSON.stringify({code})};
-  const enc=(s:string)=>encodeURIComponent(s).replace(/[!'()*]/g,c=>`%${c.charCodeAt(0).toString(16).toUpperCase()}`);
-  const canonical=Object.keys(params).sort().map(k=>`${enc(k)}=${enc(params[k])}`).join('&');
-  const signature=createHmac('sha1',`${secret}&`).update(`POST&%2F&${enc(canonical)}`).digest('base64');
-  const response=await fetch('https://dysmsapi.aliyuncs.com/',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:`${canonical}&Signature=${enc(signature)}`,signal:AbortSignal.timeout(15000)});
-  const result=await response.json();if(result.Code!=='OK') throw new Error(`SMS send failed: ${result.Code}`);
+  await sendSmsMessage(phone,code);
 }
 export function isPublicAddress(address:string) {
   if(address.includes(':')) {

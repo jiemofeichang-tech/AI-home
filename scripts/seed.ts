@@ -15,10 +15,14 @@ export async function seed(){
     ['hangzhou-meet','demo-qiao','hangzhou','不如这个周末，我们各自带一个小想法，现场用 AI 做出来？\n\n不用准备完整的分享，也不用是技术大神。一个你觉得“要是有这个就好了”的问题就够了。\n\n#杭州 #一起做点东西\n\n[本地演示内容]',['杭州','一起做点东西'],'4 hours'],
     ['workflow','demo-chen',null,'最近在记录自己的 AI 工作流，发现最值得分享的往往不是最后那张漂亮的图，而是中间改了什么、为什么改。\n\n所以想开一个「过程分享」话题：贴上你的尝试，我们一起讨论。 #创作 #工作流\n\n[本地演示内容]',['创作','工作流'],'8 hours']
   ];
-  for(const [id,author,community,body,tags,age] of posts) await query(`INSERT INTO posts(id,author_id,community_id,body,tags,created_at) VALUES($1,$2,$3,$4,$5,now()-$6::interval)`,[id,author,community,body,tags,age]);
+  for(const [id,author,community,body,tags,age] of posts) await query(`INSERT INTO posts(id,author_id,community_id,body,tags,created_at,moderation_status) VALUES($1,$2,$3,$4,$5,now()-$6::interval,'approved')`,[id,author,community,body,tags,age]);
   await query(`INSERT INTO link_resources(id,post_id,url,platform,status) VALUES('demo-mcp-link','mcp-project','https://github.com/modelcontextprotocol/typescript-sdk','github','pending')`);
   await query(`INSERT INTO jobs(id,kind,target_id) VALUES('seed-link','link','demo-mcp-link')`);
-  await query(`INSERT INTO comments(id,post_id,author_id,body) VALUES('demo-comment','welcome','demo-qiao','我用 AI 做了一个旅行照片整理工具！期待在这里分享过程。')`);
+  await query(`INSERT INTO comments(id,post_id,author_id,body,moderation_status) VALUES('demo-comment','welcome','demo-qiao','我用 AI 做了一个旅行照片整理工具！期待在这里分享过程。','approved')`);
+  await query(`INSERT INTO moderation_cases(id,target_type,target_id,author_id,status,labels,provider)
+    SELECT gen_random_uuid()::text,'post',id,author_id,'approved',ARRAY['legacy'],'legacy' FROM posts WHERE id=ANY($1::text[])`,[posts.map(post=>post[0])]);
+  await query(`INSERT INTO moderation_cases(id,target_type,target_id,author_id,status,labels,provider)
+    SELECT gen_random_uuid()::text,'comment',id,author_id,'approved',ARRAY['legacy'],'legacy' FROM comments WHERE id='demo-comment'`);
   await query(`INSERT INTO reactions(post_id,user_id,kind) VALUES('welcome','demo-xu','like'),('welcome','demo-qiao','like'),('mcp-project','demo-lin','like')`);
   for(const [id,c,owner,title,desc,city,address,days,capacity] of [['demo-hz-event','hangzhou','demo-lin','周末 AI 共创小聚','带上电脑和一个小想法，一起把它变成可以运行的作品。\n流程：自我介绍 → 两小时共创 → 展示和交流。\n[本地演示活动，不是真实活动邀约]','杭州','演示地址：杭州创作空间，报名后可见',5,20],['demo-sh-event','shanghai','demo-xu','Agent 工作流交流夜','交流已经跑起来的 Agent 工作流，也讨论尚未解决的问题。\n[本地演示活动，不是真实活动邀约]','上海','演示地址：上海开放工坊，报名后可见',8,15]]) {
     await query(`INSERT INTO events(id,community_id,organizer_id,title,description,city,address,starts_at,ends_at,capacity) VALUES($1,$2,$3,$4,$5,$6,$7,now()+($8||' days')::interval,now()+($8||' days')::interval+interval '3 hours',$9)`,[id,c,owner,title,desc,city,address,String(days),capacity]);

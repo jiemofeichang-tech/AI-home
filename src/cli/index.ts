@@ -14,7 +14,9 @@ const posts=program.command('posts');posts.command('get <id>').action(id=>call('
 program.command('comment <postId> <body>').option('--key <key>').action((id,body,opts)=>call('comments_create',{id,body,idempotencyKey:opts.key}));
 program.command('bookmark <postId>').option('--remove').action((id,opts)=>call('reactions_set',{id,kind:'bookmark',active:!opts.remove}));
 program.command('communities').option('--city <city>').action(opts=>call('communities_list',opts));
-const events=program.command('events');events.command('list').option('--city <city>').action(opts=>call('events_list',opts));events.command('get <id>').action(id=>call('events_get',{id}));events.command('rsvp <id>').option('--cancel').action((id,opts)=>call('events_rsvp',{id,attending:!opts.cancel}));events.command('create <jsonFile>').action(async file=>call('events_create',JSON.parse(await readFile(file,'utf8'))));
+const events=program.command('events');events.command('list').option('--city <city>').action(opts=>call('events_list',opts));events.command('get <id>').action(id=>call('events_get',{id}));
+events.command('rsvp <id>').description('使用姓名和手机号预约线下活动，或取消预约').option('--name <name>','报名姓名（预约必填）').option('--phone <phone>','中国大陆手机号，支持 +86 前缀（预约必填）').option('--contact-consent','确认已获本人同意将联系人资料用于活动联系和签到').option('--cancel','取消预约，无需姓名和手机号').action((id,opts)=>call('events_rsvp',opts.cancel?{id,attending:false}:{id,attending:true,attendeeName:opts.name,phoneNumber:opts.phone,contactConsent:!!opts.contactConsent}));
+events.command('create <jsonFile>').action(async file=>call('events_create',JSON.parse(await readFile(file,'utf8'))));
 program.command('call <action>').option('--input <json>','JSON 参数','{}').option('--file <path>').action(async(action,opts)=>{if(!(action in contracts))throw new Error('Unknown action');await call(action,opts.file?JSON.parse(await readFile(opts.file,'utf8')):JSON.parse(opts.input));});
 program.command('login').description('显示安全接入方法，不在命令行传递令牌').action(()=>console.log(`在 ${program.opts().url}/agents 创建授权，然后通过 AICOMMUNITY_TOKEN 环境变量提供令牌。`));
 await program.parseAsync(process.argv);

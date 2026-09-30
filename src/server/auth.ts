@@ -6,9 +6,12 @@ import { oauthProviderResourceClient } from '@better-auth/oauth-provider/resourc
 import { pool,query } from './db';
 import { config,validateProduction } from './config';
 import { sendSms } from './providers';
+import { SMS_OTP_LENGTH,SMS_OTP_TTL_SECONDS } from './sms';
 import { digest,ensureProfile } from './service';
 import { active } from './permissions';
 import { fail,scopes,type Actor } from '../shared/contracts';
+import { invitationAdmission } from './invitation-auth';
+import { PRIVACY_VERSION } from '../shared/privacy';
 
 validateProduction();
 const grantBinding:BetterAuthPlugin={
@@ -31,10 +34,10 @@ function createAuth(){return betterAuth({
   rateLimit:{enabled:true,storage:'database',window:60,max:100},
   session:{cookieCache:{enabled:false}},
   user:{deleteUser:{enabled:false}},
-  databaseHooks:{user:{create:{after:async u=>{await ensureProfile(u.id);if(process.env.ADMIN_PHONE&&u.phoneNumber===process.env.ADMIN_PHONE) await query(`UPDATE profiles SET role='admin' WHERE user_id=$1`,[u.id]);}}}},
   plugins:[
-    phoneNumber({sendOTP:async ({phoneNumber,code})=>sendSms(phoneNumber,code),phoneNumberValidator:n=>/^\+86[1][3-9]\d{9}$/.test(n),expiresIn:300,allowedAttempts:5,signUpOnVerification:{getTempEmail:n=>`${digest(n).slice(0,24)}@phone.invalid`,getTempName:()=>`新朋友${Math.floor(Math.random()*10000).toString().padStart(4,'0')}`}}),
-    jwt(),
+    phoneNumber({callbackOnVerification:async ({user})=>{await query('UPDATE profiles SET privacy_version=$2,privacy_accepted_at=now() WHERE user_id=$1 AND deleted_at IS NULL',[user.id,PRIVACY_VERSION]);},sendOTP:async ({phoneNumber,code})=>sendSms(phoneNumber,code),phoneNumberValidator:n=>/^\+86[1][3-9]\d{9}$/.test(n),otpLength:SMS_OTP_LENGTH,expiresIn:SMS_OTP_TTL_SECONDS,allowedAttempts:5,signUpOnVerification:{getTempEmail:n=>`${digest(n).slice(0,24)}@phone.invalid`,getTempName:()=>`新朋友${Math.floor(Math.random()*10000).toString().padStart(4,'0')}`}}),
+    invitationAdmission(),
+    jwt({jwt:{definePayload:()=>({})}}),
     oauthProvider({loginPage:'/login',consentPage:'/consent',scopes:['openid','profile','offline_access',...scopes],grantTypes:['authorization_code','refresh_token'],allowDynamicClientRegistration:true,allowUnauthenticatedClientRegistration:true,resources:[`${config.url}/api/v1`,`${config.url}/mcp`],clientRegistrationDefaultResources:[`${config.url}/api/v1`,`${config.url}/mcp`]}),
     grantBinding
   ]

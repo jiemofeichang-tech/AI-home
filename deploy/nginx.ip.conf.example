@@ -1,0 +1,58 @@
+# Include from nginx's http {} context, for example /etc/nginx/conf.d/ai-home.conf.
+# Replace every 203.0.113.10 with your server's public IPv4 address.
+# Before the first certificate is issued, enable only log_format and the port 80
+# server below. Add the port 443 server after the certificate files exist.
+log_format community_privacy
+    '$time_iso8601 $request_method $uri $status $body_bytes_sent $request_time';
+
+server {
+    listen 80;
+    server_name 203.0.113.10;
+
+    access_log /var/log/nginx/ai-home-access.log community_privacy;
+    error_log /var/log/nginx/ai-home-error.log warn;
+
+    # Keep this path reachable for unattended HTTP-01 renewal.
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 308 https://203.0.113.10$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name 203.0.113.10;
+
+    ssl_certificate /etc/letsencrypt/live/ai-home-ip/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/ai-home-ip/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    access_log /var/log/nginx/ai-home-access.log community_privacy;
+    error_log /var/log/nginx/ai-home-error.log warn;
+
+    client_max_body_size 12m;
+    client_body_timeout 60s;
+
+    location / {
+        proxy_pass http://127.0.0.1:3100;
+        proxy_http_version 1.1;
+        proxy_set_header Host 203.0.113.10;
+        proxy_set_header X-Forwarded-Host 203.0.113.10;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header Connection "";
+
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 90s;
+        proxy_send_timeout 90s;
+    }
+}

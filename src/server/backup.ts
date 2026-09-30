@@ -49,13 +49,18 @@ export async function restoreBackup(directory:string,pool:Pool,writeObject=putOb
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
+    // This CLI-only, transaction-local flag permits restoring closed-account
+    // placeholders. Foreign keys and all other integrity checks remain active.
+    await client.query("SET LOCAL app.privacy_restore = 'on'");
     for(const table of manifest.tables){await client.query(`LOCK TABLE ${ident(table.name)} IN ACCESS EXCLUSIVE MODE`);if(table.name==='schema_migrations')continue;const {rows}=await client.query(`SELECT count(*)::int AS count FROM ${ident(table.name)}`);if(rows[0].count)throw new Error(`Restore refused: target table ${table.name} is not empty. Use a fresh database.`);}
-    await client.query('DELETE FROM schema_migrations');let totalRows=0;
+    // The fresh target was migrated before restore. Keep its migration record
+    // even when restoring an older snapshot that predates a privacy column.
+    let totalRows=0;
     for(const table of manifest.tables){
       const types=(await client.query(`SELECT column_name,data_type FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,[table.name])).rows;let count=0;
       for await(const row of rowsFrom(safePath(directory,table.file))){
         const columns=Object.keys(row);const values=columns.map(k=>['json','jsonb'].includes(types.find(t=>t.column_name===k)?.data_type)?JSON.stringify(row[k]):row[k]);
-        await client.query(`INSERT INTO ${ident(table.name)}(${columns.map(ident).join(',')}) VALUES(${columns.map((_,i)=>`$${i+1}`).join(',')})`,values);count++;
+        await client.query(`INSERT INTO ${ident(table.name)}(${columns.map(ident).join(',')}) VALUES(${columns.map((_,i)=>`$${i+1}`).join(',')})${table.name==='schema_migrations'?' ON CONFLICT(name) DO NOTHING':''}`,values);count++;
       }
       if(count!==table.rows)throw new Error(`Row count mismatch: ${table.name}`);totalRows+=count;
     }

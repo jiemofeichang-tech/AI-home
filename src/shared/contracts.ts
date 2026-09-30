@@ -4,11 +4,11 @@ export const scopeLabels: Record<string,string> = { 'content:read':'读取内容
 const id = z.string().min(1).max(128);
 const text = z.string().trim().min(1).max(10000);
 const page = { limit: z.coerce.number().int().min(1).max(50).default(20), cursor: z.string().optional() };
-const webUrl=z.string().url().max(2048).refine(value=>['http:','https:'].includes(new URL(value).protocol),'仅支持 HTTP 或 HTTPS 网页链接');
+const webUrl=z.string().url('请输入有效的 HTTP 或 HTTPS 网页链接').max(2048).refine(value=>{try{return ['http:','https:'].includes(new URL(value).protocol);}catch{return false;}},'仅支持 HTTP 或 HTTPS 网页链接');
 export const contracts = {
   posts_list: z.object({ ...page, feed:z.enum(['latest','following','bookmarks']).default('latest'), communityId:id.optional(), authorId:id.optional(), tag:z.string().optional() }),
   posts_get: z.object({ id }),
-  posts_create: z.object({ body:z.string().trim().max(10000).default(''), communityId:id.optional(), originalId:id.optional(), mediaIds:z.array(id).max(9).default([]), links:z.array(webUrl).max(5).default([]), idempotencyKey:z.string().max(128).optional() }),
+  posts_create: z.object({ body:z.string().trim().max(10000).default(''), communityId:id.optional(), originalId:id.optional(), mediaIds:z.array(id).max(9).default([]), imageAnalysisConsent:z.boolean().default(false).describe('仅在本人同意将图片交给配置的AI服务提取文字后设为true；不影响正常发图'), links:z.array(webUrl).max(5).default([]), idempotencyKey:z.string().max(128).optional() }),
   posts_delete: z.object({ id }),
   comments_create: z.object({ id, body:text, idempotencyKey:z.string().max(128).optional() }),
   reactions_set: z.object({ id, kind:z.enum(['like','bookmark']), active:z.boolean() }),
@@ -24,7 +24,17 @@ export const contracts = {
   events_list: z.object({ city:z.string().optional(), communityId:id.optional() }),
   events_get: z.object({ id }),
   events_create: z.object({ communityId:id, title:z.string().trim().min(2).max(120), description:text, city:z.string().min(1).max(60), address:z.string().min(1).max(500), startsAt:z.string().datetime({offset:true}), endsAt:z.string().datetime({offset:true}), capacity:z.coerce.number().int().min(1).max(1000), idempotencyKey:z.string().max(128).optional() }),
-  events_rsvp: z.object({ id, attending:z.boolean() }),
+  events_rsvp: z.object({
+    id, attending:z.boolean(),
+    contactConsent:z.boolean().optional().describe('预约时必须为 true，确认本人同意姓名和手机号仅用于活动联系与签到，活动结束30天后清除'),
+    attendeeName:z.string().trim().min(1,'请输入报名姓名').max(60,'报名姓名最多 60 个字符').describe('报名时必填的联系人姓名；取消报名无需填写').optional(),
+    phoneNumber:z.string().trim().regex(/^(?:\+86)?1[3-9]\d{9}$/,'请输入有效的中国大陆手机号').describe('报名时必填的中国大陆手机号，可带 +86 前缀；取消报名无需填写').optional()
+  }).superRefine((input,ctx)=>{
+    if(!input.attending)return;
+    if(input.contactConsent!==true)ctx.addIssue({code:'custom',path:['contactConsent'],message:'请确认同意将姓名和手机号用于本次活动联系与签到'});
+    if(input.attendeeName===undefined)ctx.addIssue({code:'custom',path:['attendeeName'],message:'请输入报名姓名'});
+    if(input.phoneNumber===undefined)ctx.addIssue({code:'custom',path:['phoneNumber'],message:'请输入联系电话'});
+  }),
   events_attendees: z.object({ id }),
   events_checkin: z.object({ id, userId:id }),
   events_update: z.object({ id, recap:z.string().max(10000).optional(), cancelled:z.boolean().optional() }),
@@ -40,6 +50,14 @@ export const contracts = {
   notifications_read: z.object({}),
   reports_create: z.object({ id, reason:z.string().min(2).max(1000) }),
   admin_overview: z.object({}),
+  moderation_list: z.object({mine:z.preprocess(value=>value==='true'?true:value==='false'?false:value,z.boolean().default(false)),status:z.enum(['pending','review','rejected','approved','deleted']).optional()}),
+  moderation_decide: z.object({id,decision:z.enum(['approve','delete']),reason:z.string().trim().min(2,'请填写处理原因').max(1000)}),
+  moderation_appeal: z.object({id,reason:z.string().trim().min(2,'请说明申诉理由').max(1000)}),
+  moderation_retry: z.object({id}),
+  moderation_withdraw: z.object({id}),
+  invitations_list: z.object({}),
+  invitations_create: z.object({count:z.coerce.number().int().min(1).max(20).default(1),days:z.coerce.number().int().min(1).max(30).default(7),label:z.string().trim().max(120).default('')}),
+  invitations_revoke: z.object({id}),
   admin_moderate: z.object({ reportId:id.optional(), postId:id.optional(), userId:id.optional(), banned:z.boolean().optional() }),
   jobs_retry: z.object({ id })
 };
