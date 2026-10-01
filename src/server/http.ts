@@ -12,8 +12,10 @@ import { PRIVACY_VERSION,EVENT_CONTACT_RETENTION_DAYS } from '../shared/privacy'
 import { exportOwnData,closeAccount,expireEventContactData,scheduleObjectDeletion } from './privacy';
 import { stripImageMetadata,readImageUploadForm,withImageUploadSlot } from './image-privacy';
 import { moderationMediaAccess } from './moderation';
+import { recordPresence } from './admin-stats';
 
 export const routes:[string,string,Action][]=[
+  ['GET','admin/stats','admin_stats'],
   ['GET','moderation','moderation_list'],['POST','admin/moderation/:id/decision','moderation_decide'],['POST','moderation/:id/appeal','moderation_appeal'],['POST','admin/moderation/:id/retry','moderation_retry'],['POST','moderation/:id/withdraw','moderation_withdraw'],
   ['GET','admin/invitations','invitations_list'],['POST','admin/invitations','invitations_create'],['DELETE','admin/invitations/:id','invitations_revoke'],
   ['POST','communities/:id/remove','communities_remove'],
@@ -94,7 +96,11 @@ export async function handleApi(request:Request) {
       }
       fail(404,'个人信息接口不存在');
     }
+    if(path==='presence'&&request.method==='POST'&&request.headers.has('authorization'))fail(403,'在线状态需要本人登录网页更新');
     const actor=await actorFromRequest(request);
+    if(path==='presence'&&request.method==='POST') {
+      return Response.json(await recordPresence(actor),{headers:{'Cache-Control':'no-store'}});
+    }
     if(path==='me'&&request.method==='GET') {
       const [profile]=actor.userId?await query(`SELECT u.id,u.name,u.image,p.handle,p.bio,p.city,p.role FROM "user" u JOIN profiles p ON p.user_id=u.id WHERE u.id=$1`,[actor.userId]):[];
       return Response.json({user:profile||null,dev:config.dev,inviteOnly:config.inviteOnly},{headers:{'Cache-Control':'no-store'}});

@@ -23,7 +23,7 @@ export async function exportOwnData(actor:Actor) {
     const read=(sql:string)=>query(sql,[actor.userId],client);
     return {
       formatVersion:1,exportedAt:new Date().toISOString(),
-      profile:{id:p.user_id,name:p.name,phoneNumber:p.phoneNumber,image:p.image,handle:p.handle,bio:p.bio,city:p.city,role:p.role,banned:p.banned,createdAt:p.account_created_at,privacyVersion:p.privacy_version,privacyAcceptedAt:p.privacy_accepted_at},
+      profile:{id:p.user_id,name:p.name,phoneNumber:p.phoneNumber,image:p.image,handle:p.handle,bio:p.bio,city:p.city,role:p.role,banned:p.banned,createdAt:p.account_created_at,lastSeenAt:p.last_seen_at,privacyVersion:p.privacy_version,privacyAcceptedAt:p.privacy_accepted_at},
       posts:await read('SELECT id,community_id,body,tags,original_id,agent_name,deleted_at,created_at FROM posts WHERE author_id=$1 ORDER BY created_at'),
       comments:await read('SELECT id,post_id,body,agent_name,deleted_at,created_at FROM comments WHERE author_id=$1 ORDER BY created_at'),
       media:await read('SELECT id,post_id,mime,bytes,original_name,extracted_text,description,status,ai_consent,created_at FROM media WHERE owner_id=$1 ORDER BY created_at'),
@@ -132,7 +132,7 @@ async function closeAccountTransaction(actor:Actor) {
     await run(`UPDATE "user" SET name='已注销账户',email=$2,"emailVerified"=false,"phoneNumber"=NULL,"phoneNumberVerified"=false,image=NULL,"updatedAt"=now() WHERE id=$1`,[id,`${randomUUID()}@deleted.invalid`]);
     // This is deliberately last: guard triggers allow the scrub above, then
     // reject all later writes even from requests authenticated before closure.
-    await run(`UPDATE profiles SET handle=$2,bio='',city='',role='member',banned=true,privacy_version=NULL,privacy_accepted_at=NULL,deleted_at=now() WHERE user_id=$1`,[id,`deleted_${randomUUID().replaceAll('-','')}`]);
+    await run(`UPDATE profiles SET handle=$2,bio='',city='',role='member',banned=true,privacy_version=NULL,privacy_accepted_at=NULL,last_seen_at=NULL,deleted_at=now() WHERE user_id=$1`,[id,`deleted_${randomUUID().replaceAll('-','')}`]);
     return {closed:true as const,pendingObjectDeletions:media.length,retainedPlaceholder:true as const};
   });
 }

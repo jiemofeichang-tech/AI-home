@@ -3,13 +3,14 @@ import type { PoolClient } from 'pg';
 import { query, transaction } from './db';
 import { active, adminAccess, human, readablePost } from './permissions';
 import { fail, type Actor, type Item } from '../shared/contracts';
-import { moderateContent, moderationProviderStatus } from './moderation-provider';
+import { moderateContent, moderationProviderStatus, ModerationTransientError } from './moderation-provider';
 import { readModerationDraft, applyModerationDraft } from './moderation-drafts';
+import { extractWebUrls,isLoginPageUrl } from '../shared/links';
 
-type TargetType='post'|'comment'|'draft';
+type TargetType='post'|'comment'|'draft'|'media'|'link';
 type Status='pending'|'review'|'rejected'|'approved'|'deleted';
 type Case={id:string;target_type:TargetType;target_id:string;author_id:string;status:Status;labels:string[];reason:string;appeal_reason:string;provider:string;reviewed_by:string|null;revision:number;generation:number;created_at:Date;updated_at:Date};
-type Target={author_id:string;text:string;deleted_at:Date|null;moderation_status:string;images:{id:string;storageKey:string;mime:string}[];post_id?:string;kind?:string;target_id?:string};
+type Target={author_id:string;text:string;displayText?:string;linkUrls?:string[];deleted_at:Date|null;moderation_status:string;images:{id:string;storageKey:string;mime:string}[];post_id?:string;community_id?:string|null;parentGeneration?:number;kind?:string;target_id?:string};
 const statuses=new Set<Status>(['pending','review','rejected','approved','deleted']);
 const unavailableReason='自动审核暂不可用，内容已隔离，请等待人工审核。';
 
@@ -37,14 +38,28 @@ async function authorOpen(authorId:string,client?:PoolClient,lock:'SHARE'|'UPDAT
 }
 async function readTarget(entry:Case,client?:PoolClient):Promise<Target|undefined> {
   if(entry.target_type==='draft')return readModerationDraft(entry.target_id,client);
+  if(entry.target_type==='media'||entry.target_type==='link') {
+    const table=entry.target_type==='media'?'media':'link_resources';
+    const [hint]=await query(`SELECT post_id FROM ${table} WHERE id=$1`,[entry.target_id],client);
+    if(!hint)return undefined;
+    const [post]=await query(`SELECT p.author_id,p.deleted_at,c.generation FROM posts p JOIN moderation_cases c ON c.target_type='post' AND c.target_id=p.id WHERE p.id=$1${client?' FOR UPDATE OF p':''}`,[hint.post_id],client);
+    const [row]=await query(`SELECT * FROM ${table} WHERE id=$1${client?' FOR UPDATE':''}`,[entry.target_id],client);
+    if(!post||!row)return undefined;
+    const displayText=(entry.target_type==='media'?[row.extracted_text,row.description]:[row.url,row.title,row.description,row.content]).filter(Boolean).join('\n');
+    return {author_id:post.author_id,deleted_at:post.deleted_at||(entry.target_type==='media'&&!row.ai_consent?new Date():null),moderation_status:row.derivation_status,post_id:row.post_id,parentGeneration:post.generation,
+      // Internal fetch metadata is still inspected, but is not publication copy.
+      text:entry.target_type==='media'?displayText:[displayText,JSON.stringify(row.metadata)].join('\n'),displayText,
+      ...(entry.target_type==='link'?{linkUrls:[row.url]}:{}),images:[]};
+  }
   const table=entry.target_type==='post'?'posts':'comments';
   const [row]=await query(`SELECT * FROM ${table} WHERE id=$1${client?' FOR UPDATE':''}`,[entry.target_id],client);
   if(!row)return undefined;
   if(entry.target_type==='comment')return {author_id:row.author_id,text:[row.body,row.agent_name||''].join('\n'),deleted_at:row.deleted_at,moderation_status:row.moderation_status,images:[],post_id:row.post_id};
-  const media=await query('SELECT id,storage_key,mime,extracted_text,description FROM media WHERE post_id=$1 ORDER BY created_at,id',[row.id],client);
-  const links=await query('SELECT url,title,description,content,metadata FROM link_resources WHERE post_id=$1 ORDER BY id',[row.id],client);
-  return {author_id:row.author_id,deleted_at:row.deleted_at,moderation_status:row.moderation_status,
-    text:[row.body,row.agent_name||'',...links.map(link=>[link.url,link.title,link.description,link.content,JSON.stringify(link.metadata)].join('\n')),...media.map(image=>`${image.extracted_text}\n${image.description}`)].join('\n'),
+  const media=await query('SELECT id,storage_key,mime FROM media WHERE post_id=$1 ORDER BY created_at,id',[row.id],client);
+  const links=await query('SELECT url FROM link_resources WHERE post_id=$1 ORDER BY id',[row.id],client);
+  const bodyUrls=new Set(extractWebUrls(row.body).map(url=>new URL(url).href));
+  return {author_id:row.author_id,deleted_at:row.deleted_at,moderation_status:row.moderation_status,community_id:row.community_id,
+    text:[row.body,row.agent_name||'',...links.map(link=>link.url).filter(url=>!bodyUrls.has(new URL(url).href))].filter(Boolean).join('\n'),linkUrls:links.map(link=>link.url),
     images:media.map(image=>({id:image.id,storageKey:image.storage_key,mime:image.mime}))};
 }
 async function lockedCase(id:string,client:PoolClient) {
@@ -64,6 +79,14 @@ async function admin(actor:Actor,client?:PoolClient) {
 }
 async function syncTarget(entry:Case,status:Status,client:PoolClient) {
   if(entry.target_type==='draft'){await applyModerationDraft(entry.target_id,status,client);return;}
+  if(entry.target_type==='media'||entry.target_type==='link') {
+    const table=entry.target_type==='media'?'media':'link_resources';
+    await query("SELECT set_config('app.moderation_write','on',true)",[],client);
+    const erasure=entry.target_type==='media'?",extracted_text='',description=''":",title='',description='',content='',metadata='{}'";
+    const [row]=await query(`UPDATE ${table} SET derivation_status=$2${status==='deleted'?erasure:''} WHERE id=$1 RETURNING post_id`,[entry.target_id,status],client);
+    if(row)await queueIndex(row.post_id,client);
+    return;
+  }
   const table=entry.target_type==='post'?'posts':'comments';
   await query(`UPDATE ${table} SET moderation_status=$2,deleted_at=CASE WHEN $2='deleted' THEN coalesce(deleted_at,now()) ELSE deleted_at END WHERE id=$1 AND deleted_at IS NULL`,[entry.target_id,status],client);
   if(entry.target_type==='post') {
@@ -86,21 +109,30 @@ async function history(id:string,action:string,status:Status,reason:string,actor
 export async function moderationList(actor:Actor,input:{mine?:boolean;status?:string}) {
   human(actor);await active(actor);
   if(!input.mine)await admin(actor);
-  if(input.status&&!statuses.has(input.status as Status))fail(400,'无效的审核状态');
+  if(input.status&&input.status!=='actionable'&&!statuses.has(input.status as Status))fail(400,'无效的审核状态');
   const entries=await query<Case>(`SELECT c.* FROM moderation_cases c JOIN profiles p ON p.user_id=c.author_id
-    WHERE p.deleted_at IS NULL AND ($1::text IS NULL OR c.author_id=$1) AND ($2='' OR c.status=$2)
+    WHERE p.deleted_at IS NULL AND ($1::text IS NULL OR c.author_id=$1) AND ($2='' OR c.status=$2 OR ($2='actionable' AND c.status IN ('review','rejected')))
+    AND ($2<>'actionable' OR CASE c.target_type
+      WHEN 'post' THEN EXISTS(SELECT 1 FROM posts t WHERE t.id=c.target_id AND t.deleted_at IS NULL AND t.moderation_status<>'deleted')
+      WHEN 'comment' THEN EXISTS(SELECT 1 FROM comments t JOIN posts parent ON parent.id=t.post_id WHERE t.id=c.target_id AND t.deleted_at IS NULL AND t.moderation_status<>'deleted' AND parent.deleted_at IS NULL AND parent.moderation_status<>'deleted')
+      WHEN 'draft' THEN EXISTS(SELECT 1 FROM content_drafts t WHERE t.id=c.target_id AND t.status<>'deleted')
+      WHEN 'media' THEN EXISTS(SELECT 1 FROM media t JOIN posts parent ON parent.id=t.post_id JOIN moderation_cases original ON original.target_type='post' AND original.target_id=parent.id WHERE t.id=c.target_id AND t.ai_consent AND t.derivation_status<>'deleted' AND parent.deleted_at IS NULL AND parent.moderation_status<>'deleted' AND original.status<>'deleted')
+      WHEN 'link' THEN EXISTS(SELECT 1 FROM link_resources t JOIN posts parent ON parent.id=t.post_id JOIN moderation_cases original ON original.target_type='post' AND original.target_id=parent.id WHERE t.id=c.target_id AND t.derivation_status<>'deleted' AND parent.deleted_at IS NULL AND parent.moderation_status<>'deleted' AND original.status<>'deleted')
+      ELSE false END)
     ORDER BY c.updated_at DESC,c.id DESC LIMIT 100`,[input.mine?actor.userId:null,input.status||'']);
   const items=[];
   for(const entry of entries) {
     const target=await readTarget(entry);
     const [author]=await query('SELECT name FROM "user" WHERE id=$1',[entry.author_id]);
     const removed=!target||!!target.deleted_at||entry.status==='deleted';
+    // A deletion may commit after the live-target SQL predicate was evaluated.
+    if(input.status==='actionable'&&(removed||target.moderation_status==='deleted'))continue;
     const events=await query(`SELECT h.id,h.action,h.status,h.reason,h.created_at AS "createdAt",u.name AS "actorName"
       FROM moderation_history h LEFT JOIN "user" u ON u.id=h.actor_id WHERE h.case_id=$1 ORDER BY h.created_at DESC,h.id DESC LIMIT 30`,[entry.id]);
     items.push({id:entry.id,targetType:entry.target_type,targetId:entry.target_id,authorId:entry.author_id,authorName:author?.name||'社区成员',
-      text:removed?'':target.text,images:removed?[]:target.images.map(image=>image.id),status:removed?'deleted':entry.status,labels:entry.labels,reason:entry.reason,appealReason:entry.appeal_reason,history:events,
+      text:removed?'':target.displayText??target.text,images:removed?[]:target.images.map(image=>image.id),status:removed?'deleted':entry.status,labels:entry.labels,reason:entry.reason,appealReason:entry.appeal_reason,history:events,
       revision:entry.revision,provider:entry.provider,createdAt:entry.created_at,updatedAt:entry.updated_at,reviewedBy:entry.reviewed_by,
-      ...(target?.kind?{draftKind:target.kind,resultTargetId:target.target_id}:{}),...(target?.post_id?{postId:target.post_id}:{})});
+      ...(target?.kind?{draftKind:target.kind,resultTargetId:target.target_id}:{}),...(target?.post_id?{postId:target.post_id}:{}),...(entry.target_type==='post'?{postCommunityId:target?.community_id||null}:{})});
   }
   return {items,provider:moderationProviderStatus()};
 }
@@ -119,6 +151,8 @@ export async function moderationDecide(actor:Actor,input:{id:string;decision:'ap
     if(status==='approved'&&entry.target_type==='post') {
       await query("UPDATE media SET status='blocked',error='人工审核后停止可选解析' WHERE post_id=$1 AND status IN ('pending','processing')",[entry.target_id],client);
       await query("UPDATE link_resources SET status='partial',error='人工审核后停止链接解析' WHERE post_id=$1 AND status IN ('pending','processing')",[entry.target_id],client);
+      await query(`UPDATE moderation_cases SET status='deleted',revision=revision+1,generation=generation+1,reason='原帖经人工审核，停止尚未公开的可选解析。',updated_at=now()
+        WHERE status='pending' AND ((target_type='media' AND target_id IN (SELECT id FROM media WHERE post_id=$1)) OR (target_type='link' AND target_id IN (SELECT id FROM link_resources WHERE post_id=$1)))`,[entry.target_id],client);
     }
     await history(entry.id,input.decision,status,input.reason.trim(),actor.userId!,client);
     // Network requests may still be in flight; both their job claim and content
@@ -202,48 +236,83 @@ export async function moderationRevisionForPost(postId:string):Promise<number|nu
   return entry?.generation??null;
 }
 
-/** Write derived content and quarantine its complete post in the same commit. */
-export async function saveModeratedDerivation(postId:string,revision:number,write:(client:PoolClient)=>Promise<boolean>):Promise<boolean> {
+/** Capture both boundaries before parsing; an appeal/retry may change only the preview. */
+export async function moderationRevisionForDerivation(type:'media'|'link',id:string):Promise<number> {
+  const [entry]=await query('SELECT generation FROM moderation_cases WHERE target_type=$1 AND target_id=$2',[type,id]);
+  return entry?.generation??0;
+}
+
+/** Keep optional enrichments private without withdrawing the original post. */
+export async function saveModeratedDerivation(postId:string,revision:number,type:'media'|'link',targetId:string,derivedRevision:number,write:(client:PoolClient)=>Promise<boolean>):Promise<boolean> {
   return transaction(async client=>{
     const [hint]=await query<Case>("SELECT * FROM moderation_cases WHERE target_type='post' AND target_id=$1",[postId],client);
     if(!hint)return false;
     const found=await lockedCase(hint.id,client);
     if(!found||found.entry.generation!==revision||found.entry.reviewed_by)return false;
+    const [previous]=await query<Case>('SELECT * FROM moderation_cases WHERE target_type=$1 AND target_id=$2 FOR UPDATE',[type,targetId],client);
+    // A human's decision about this preview must also survive a late parser.
+    if((previous?.generation??0)!==derivedRevision||previous?.reviewed_by||previous?.status==='deleted')return false;
     await query("SELECT set_config('app.moderation_write','on',true)",[],client);
     if(!await write(client))return false;
-    await query(`UPDATE moderation_cases SET status='pending',labels='{}',reason='',provider='',revision=revision+1,updated_at=now() WHERE id=$1`,[hint.id],client);
-    await syncTarget(found.entry,'pending',client);await queueCase(hint.id,client);
-    await history(hint.id,'derived_content','pending','图片或链接处理结果已更新，重新审核。',null,client);
+    const [entry]=await query<Case>(`INSERT INTO moderation_cases(id,target_type,target_id,author_id) VALUES($1,$2,$3,$4)
+      ON CONFLICT(target_type,target_id) DO UPDATE SET status='pending',labels='{}',reason='',provider='',revision=moderation_cases.revision+1,generation=moderation_cases.generation+1,updated_at=now() RETURNING *`,[randomUUID(),type,targetId,found.entry.author_id],client);
+    await queueCase(entry.id,client);await queueIndex(postId,client);
+    await history(entry.id,'derived_content','pending','可选解析已完成，安全检查通过后展示；原帖不受影响。',null,client);
     return true;
   });
 }
 
-/** Returns false while enrichment is still running, so the job can wait. */
-export async function processModeration(id:string):Promise<boolean> {
+/** Retire an unusable, automatically generated login preview, never its post. */
+export async function discardUnavailableLinkPreview(postId:string,revision:number,linkId:string,derivedRevision:number):Promise<boolean> {
+  return transaction(async client=>{
+    const [hint]=await query<Case>("SELECT * FROM moderation_cases WHERE target_type='post' AND target_id=$1",[postId],client);
+    if(!hint)return false;
+    const found=await lockedCase(hint.id,client);
+    if(!found||found.entry.generation!==revision||found.entry.reviewed_by)return false;
+    const [link]=await query('SELECT * FROM link_resources WHERE id=$1 AND post_id=$2 FOR UPDATE',[linkId,postId],client);
+    const [previous]=await query<Case>("SELECT * FROM moderation_cases WHERE target_type='link' AND target_id=$1 FOR UPDATE",[linkId],client);
+    if(!link||(previous?.generation??0)!==derivedRevision)return false;
+    if(!previous&&(link.derivation_status==='approved'||link.title||link.description||link.content||Object.keys(link.metadata||{}).length))return false;
+    if(previous&&(previous.reviewed_by||previous.appeal_reason||!['pending','review','rejected'].includes(previous.status)||!isLoginPageUrl(link.metadata?.resolvedUrl)))return false;
+    const reason='来源需要登录，暂无可用预览；原始分享链接保留。';
+    await query("SELECT set_config('app.moderation_write','on',true)",[],client);
+    await query(`UPDATE link_resources SET status='failed',error=$2,fetched_at=now(),title='',description='',content='',metadata='{}',derivation_status='deleted' WHERE id=$1`,[linkId,reason],client);
+    if(previous) {
+      await query("UPDATE moderation_cases SET status='deleted',reason=$2,revision=revision+1,generation=generation+1,updated_at=now() WHERE id=$1",[previous.id,reason],client);
+      await query("UPDATE jobs SET status='done',error=NULL,locked_at=NULL WHERE kind='moderation' AND target_id=$1",[previous.id],client);
+      await history(previous.id,'preview_unavailable','deleted',reason,null,client);
+    }
+    await queueIndex(postId,client);
+    return true;
+  });
+}
+
+/** Temporary outages stay pending and use the queue's bounded retry policy. */
+export async function processModeration(id:string,attempt=1):Promise<boolean> {
   const snapshot=await transaction(async client=>{
     const found=await lockedCase(id,client);
     if(!found||found.entry.status!=='pending'||found.entry.reviewed_by)return undefined;
-    if(found.entry.target_type==='post') {
-      const busy=await query(`SELECT 1 FROM jobs WHERE status IN ('pending','processing') AND
-        ((kind='link' AND target_id IN (SELECT id FROM link_resources WHERE post_id=$1)) OR
-         (kind='image' AND target_id IN (SELECT id FROM media WHERE post_id=$1 AND ai_consent=true))) LIMIT 1`,[found.entry.target_id],client);
-      if(busy.length)return {waiting:true as const};
-    }
-    return {...found,waiting:false as const};
+    return found;
   });
   if(!snapshot)return true;
-  if(snapshot.waiting)return false;
   const {entry,target}=snapshot;
   let status:'approved'|'review'|'rejected'='review',labels:string[]=[],provider='unavailable',reason=unavailableReason;
   try {
-    const result=await moderateContent({text:target.text,images:target.images.map(({storageKey,mime})=>({storageKey,mime})),dataId:`${entry.id}:${entry.revision}`});
+    const result=await moderateContent({text:target.text,linkUrls:target.linkUrls,images:target.images.map(({storageKey,mime})=>({storageKey,mime})),dataId:`${entry.id}:${entry.revision}`});
     if(!['approved','review','rejected'].includes(result.decision))throw new Error('Invalid moderation result');
     status=result.decision;labels=result.labels.filter(label=>typeof label==='string').map(label=>label.slice(0,100)).slice(0,30);provider=result.provider.slice(0,80);
-    reason=status==='approved'?'自动审核通过。':status==='rejected'?'自动审核识别到高风险内容，已隔离，可提交申诉。':'内容需要人工审核，审核前不会公开。';
-  } catch {labels=['provider_unavailable'];}
-  await transaction(async client=>{
+    reason=status==='approved'?'自动审核通过。':status==='rejected'?'自动审核识别到高风险内容，已隔离，可提交申诉。':labels.includes('pt_to_contact')?'自动检查提示疑似引流信息，已转管理员人工复核；处理前不会公开，可提交说明或申诉。':'自动检查已结束，需要管理员人工复核；处理前不会公开，可提交说明或申诉。';
+  } catch(error) {
+    if(error instanceof ModerationTransientError&&attempt<3)throw error;
+    labels=['provider_unavailable'];
+    if(error instanceof ModerationTransientError)reason='自动安全检查连续失败，已转人工复核；公开前仍仅自己可见。';
+  }
+  const completed=await transaction(async client=>{
     const current=await lockedCase(id,client);
     if(!current||current.entry.revision!==entry.revision||current.entry.status!=='pending'||current.entry.reviewed_by)return;
+    // A restarted original check invalidates this snapshot, but must not leave
+    // a still-pending preview with a completed job and no way to resume.
+    if(current.target.parentGeneration!==target.parentGeneration)return false;
     if(current.entry.target_type==='comment'&&status==='approved') {
       try {await readablePost({userId:current.entry.author_id},current.target.post_id!,client);}catch {status='review';reason='原帖当前不可访问，请等待人工处理。';}
     }
@@ -251,5 +320,5 @@ export async function processModeration(id:string):Promise<boolean> {
     await query(`UPDATE moderation_cases SET status=$2,labels=$3,provider=$4,reason=$5,updated_at=now() WHERE id=$1 AND revision=$6`,[id,status,labels,provider,reason,entry.revision],client);
     await history(id,'automatic',status,reason,null,client);
   });
-  return true;
+  return completed!==false;
 }

@@ -41,3 +41,11 @@ export function extractWebUrls(text: string): string[] {
   }
   return links;
 }
+/** Only explicit authentication destinations count, never article text or query values. */
+export function isLoginPageUrl(value:unknown):boolean {
+  if(typeof value!=='string')return false;
+  try {
+    const url=new URL(value);
+    return ['http:','https:'].includes(url.protocol)&&/^\/(?:auth\/|accounts?\/|users?\/|sessions?\/)?(?:login|signin|sign-in)\/?$/i.test(url.pathname);
+  } catch {return false;}
+}

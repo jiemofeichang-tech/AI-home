@@ -1,0 +1,139 @@
+.section {
+  margin-bottom: 32px;
+}
+
+.heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.heading h2 {
+  margin: 0 0 5px;
+  font-size: 22px;
+}
+
+.heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.refresh:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--bg);
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.card {
+  min-width: 0;
+  padding: 16px 13px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface, #fff);
+}
+
+.online {
+  border-color: #d2e9da;
+  background: #f2f9f3;
+}
+
+.card dt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.online dt {
+  color: #337052;
+}
+
+.card dd {
+  margin: 13px 0 5px;
+  font-size: clamp(23px, 2.6vw, 31px);
+  font-weight: 650;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.online dd {
+  color: #286143;
+}
+
+.placeholder {
+  color: #b5bec7;
+}
+
+.card .detail {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+.definition {
+  margin: 13px 0 7px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.footer {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.error {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: #fff6e5;
+  color: #76531c;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+@media (max-width: 720px) {
+  .cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .card {
+    padding: 16px;
+  }
+
+  .card dd {
+    font-size: 28px;
+  }
+}

@@ -1,9 +1,12 @@
 import { createHash,createHmac,randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { getObject,imageMime } from './storage';
+import { extractWebUrls } from '../shared/links';
 
 export type ModerationDecision='approved'|'review'|'rejected';
-export type ModerationInput={text:string;images:Array<{storageKey:string;mime:string}>;dataId:string};
+export type ModerationInput={text:string;images:Array<{storageKey:string;mime:string}>;dataId:string;
+  /** Internal context from attached link records, never a public moderation parameter. */
+  linkUrls?:string[]};
 export type ModerationResult={decision:ModerationDecision;labels:string[];provider:string};
 
 // Green 2022-03-02 RPC protocol and temporary-upload flow:
@@ -14,10 +17,55 @@ export type ModerationResult={decision:ModerationDecision;labels:string[];provid
 // https://help.aliyun.com/zh/document_detail/467829.html
 const provider='aliyun';
 const regions=new Set(['cn-shanghai','cn-beijing','cn-hangzhou','cn-shenzhen']);
-const safeError=()=>new Error('内容审核服务暂不可用，请等待人工审核');
+const safeMessage='内容审核服务暂不可用，请等待人工审核';
+/** Retriable failures carry no upstream message, response, or credentials. */
+export class ModerationTransientError extends Error {
+  constructor(){super(safeMessage);this.name='ModerationTransientError';}
+}
+const safeError=(transient=false)=>transient?new ModerationTransientError():new Error(safeMessage);
 const object=(value:unknown):Record<string,unknown>|undefined=>value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:undefined;
 const encode=(value:string)=>encodeURIComponent(value).replace(/[!'()*]/g,c=>`%${c.charCodeAt(0).toString(16).toUpperCase()}`);
-const sha256=(value:string)=>createHash('sha256').update(value).digest('hex');
+const sha256=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex');
+const transientStatus=(value:unknown)=>typeof value==='number'&&(value===429||value>=500&&value<=599)
+  ||typeof value==='string'&&(/^(429|5\d\d)$/.test(value)||/^(Throttling(?:\.[A-Za-z]+)?|ServiceUnavailable|InternalError|RequestTimeout)$/.test(value));
+const networkError=(error:unknown)=>error instanceof TypeError||error instanceof DOMException&&['TimeoutError','AbortError'].includes(error.name);
+
+// Process-local, approval-only cache: restart clears it; no text, image bytes,
+// object keys, or user identifiers are retained. Bump this version whenever
+// label policy, animation checks, text chunking, or service parameters change.
+const cachePolicy='approval-v2-text600-overlap60-exact-share-url-recheck-image-static';
+const cacheTtlMs=10*60_000,cacheMaxEntries=512;
+type CheckResult=Omit<ModerationResult,'provider'>;
+const approvals=new Map<string,{expires:number;labels:string[]}>();
+function cacheKey(kind:'text'|'image',content:string|Buffer,s:ReturnType<typeof settings>,mime='',linkUrls:string[]=[]) {
+  const scope=JSON.stringify([provider,s.region,s.key,cachePolicy,s.policyVersion,kind,kind==='text'?'comment_detection_pro':'postImageCheck:textInImage',mime,linkUrls]);
+  return sha256(`${sha256(scope)}:${sha256(content)}`);
+}
+function cachedApproval(key:string):CheckResult|undefined {
+  const entry=approvals.get(key);
+  if(!entry)return;
+  if(entry.expires<=Date.now()){approvals.delete(key);return;}
+  return {decision:'approved',labels:[...entry.labels]};
+}
+function saveApprovals(results:Map<string,CheckResult>) {
+  const now=Date.now();
+  for(const [key,entry] of approvals)if(entry.expires<=now)approvals.delete(key);
+  for(const [key,result] of results) {
+    if(result.decision!=='approved')continue;
+    approvals.delete(key);
+    while(approvals.size>=cacheMaxEntries)approvals.delete(approvals.keys().next().value!);
+    approvals.set(key,{expires:now+cacheTtlMs,labels:[...result.labels]});
+  }
+}
+
+async function cloudFetch(url:string,init:RequestInit) {
+  try {return await fetch(url,{...init,cache:'no-store'});}
+  catch(error){throw safeError(networkError(error));}
+}
+async function cloudJson(response:Response):Promise<unknown> {
+  try {return await response.json();}
+  catch(error){throw safeError(networkError(error));}
+}
 
 function settings() {
   return {
@@ -25,6 +73,9 @@ function settings() {
     region:process.env.CONTENT_MODERATION_REGION||'cn-shanghai',
     key:process.env.CONTENT_MODERATION_ACCESS_KEY_ID?.trim()||'',
     secret:process.env.CONTENT_MODERATION_ACCESS_KEY_SECRET?.trim()||'',
+    // Increment when changing the cloud-side moderation policy to invalidate
+    // approvals immediately, without waiting for the ten-minute expiry.
+    policyVersion:process.env.CONTENT_MODERATION_POLICY_VERSION||'1',
   };
 }
 export function moderationProviderStatus():{provider:string;configured:boolean} {
@@ -38,14 +89,14 @@ async function rpc(action:string,parameters:Record<string,string>,s:ReturnType<t
     SignatureMethod:'HMAC-SHA1',SignatureVersion:'1.0',SignatureNonce:randomUUID(),Timestamp:new Date().toISOString().replace(/\.\d{3}Z$/,'Z'),...parameters};
   const canonical=Object.keys(values).sort().map(key=>`${encode(key)}=${encode(values[key])}`).join('&');
   const signature=createHmac('sha1',`${s.secret}&`).update(`POST&%2F&${encode(canonical)}`).digest('base64');
-  const response=await fetch(`https://green-cip.${s.region}.aliyuncs.com/`,{method:'POST',redirect:'error',headers:{'content-type':'application/x-www-form-urlencoded'},body:`${canonical}&Signature=${encode(signature)}`,signal:timeout(deadline)});
-  if(!response.ok)throw safeError();
-  const payload=object(await response.json());
-  if(payload?.Code!==200||!object(payload.Data))throw safeError();
+  const response=await cloudFetch(`https://green-cip.${s.region}.aliyuncs.com/`,{method:'POST',redirect:'error',headers:{'content-type':'application/x-www-form-urlencoded'},body:`${canonical}&Signature=${encode(signature)}`,signal:timeout(deadline)});
+  if(!response.ok)throw safeError(transientStatus(response.status));
+  const payload=object(await cloudJson(response));
+  if(payload?.Code!==200||!object(payload.Data))throw safeError(transientStatus(payload?.Code));
   return payload.Data as Record<string,unknown>;
 }
 function timeout(deadline:number) {
-  const remaining=deadline-Date.now();if(remaining<=0)throw safeError();
+  const remaining=deadline-Date.now();if(remaining<=0)throw safeError(true);
   return AbortSignal.timeout(Math.min(20_000,remaining));
 }
 
@@ -94,6 +145,37 @@ function* textChunks(text:string) {
   }
 }
 
+function attachedWebUrls(values:string[]|undefined) {
+  return [...new Set((values??[]).filter(value=>{
+    if(typeof value!=='string')return false;
+    const links=extractWebUrls(value);
+    return links.length===1&&links[0]===value;
+  }))].sort();
+}
+
+/** Only whole URL candidates accepted by the shared parser may be replaced. */
+function withoutAttachedUrls(text:string,urls:string[]) {
+  const attached=new Set(urls);
+  // Consume the whole candidate before matching: an attached URL must not erase
+  // its prefix in another URL, a query parameter, or a word containing a URL.
+  return text.replace(/(?<![A-Za-z0-9_+./-])https?:\/\/[^\s<>"“”‘’«»「」『』，。！？；：、…]+/giu,candidate=>{
+    const links=extractWebUrls(candidate),url=links[0];
+    if(links.length!==1||!attached.has(url)||!candidate.startsWith(url))return candidate;
+    // The parser trims prose wrappers/punctuation; keep that surrounding text.
+    return `[分享链接]${candidate.slice(url.length)}`;
+  });
+}
+
+function shareUrlRetryAllowed(data:Record<string,unknown>,result:CheckResult) {
+  if(data.ManualTaskId)return false;
+  const rows=data.Result as Record<string,unknown>[]; // mapResult already validated these rows.
+  // pt_to_contact is the documented suspected contact-advertising label, even
+  // at high confidence/risk. It is eligible for another scan, never a pass by
+  // itself. A medium/high result attributed to anything else stays isolated.
+  if(rows.some(row=>row.Label!=='pt_to_contact'&&(row.Label!=='nonLabel'||!['none','low'].includes((row.RiskLevel??data.RiskLevel) as string))))return false;
+  return result.decision==='approved'||result.labels.includes('pt_to_contact');
+}
+
 type UploadToken={key:string;secret:string;securityToken:string;bucket:string;prefix:string;endpoint:string;region:string;expires:number};
 function uploadToken(data:Record<string,unknown>):UploadToken {
   for(const name of ['AccessKeyId','AccessKeySecret','SecurityToken','BucketName','FileNamePrefix','OssInternetEndPoint'])
@@ -124,8 +206,8 @@ async function uploadImage(bytes:Buffer,mime:string,token:UploadToken,deadline:n
   const signingKey=hmac(hmac(hmac(hmac(`aliyun_v4${token.secret}`,date),token.region),'oss'),'aliyun_v4_request');
   const signature=createHmac('sha256',signingKey).update(`OSS4-HMAC-SHA256\n${stamp}\n${scope}\n${sha256(canonical)}`).digest('hex');
   headers.authorization=`OSS4-HMAC-SHA256 Credential=${token.key}/${scope},Signature=${signature}`;
-  const response=await fetch(`https://${token.bucket}.${token.endpoint}/${key}`,{method:'PUT',redirect:'error',headers,body:new Uint8Array(bytes),signal:timeout(deadline)});
-  if(!response.ok)throw safeError();
+  const response=await cloudFetch(`https://${token.bucket}.${token.endpoint}/${key}`,{method:'PUT',redirect:'error',headers,body:new Uint8Array(bytes),signal:timeout(deadline)});
+  if(!response.ok)throw safeError(transientStatus(response.status));
   await response.body?.cancel();
   return key;
 }
@@ -143,6 +225,7 @@ function animatedPng(bytes:Buffer) {
 export async function moderateContent(input:ModerationInput):Promise<ModerationResult> {
   if(!moderationProviderStatus().configured)throw safeError();
   const s=settings();const deadline=Date.now()+110_000;
+  const pendingApprovals=new Map<string,CheckResult>();
   let decision:ModerationDecision='approved';const labels=new Set<string>();let examined=0;
   const merge=(result:Omit<ModerationResult,'provider'>)=>{
     for(const label of result.labels)labels.add(label);
@@ -152,9 +235,40 @@ export async function moderateContent(input:ModerationInput):Promise<ModerationR
     // Do not forward a user-selected identifier (which may contain a phone or
     // other personal data) into the provider's request identifiers.
     const id=sha256(input.dataId).slice(0,40);let part=0;
-    if(input.text.trim())for(const content of textChunks(input.text)) {
-      const dataId=`${id}.t${part++}`;
-      merge(mapResult(await rpc('TextModerationPlus',{Service:'comment_detection_pro',ServiceParameters:JSON.stringify({content,dataId})},s,deadline),dataId));examined++;
+    async function scanText(text:string) {
+      const result:CheckResult={decision:'approved',labels:[]};
+      const textLabels=new Set<string>();let retryAllowed=true;
+      for(const content of textChunks(text)) {
+        const dataId=`${id}.t${part++}`;
+        const data=await rpc('TextModerationPlus',{Service:'comment_detection_pro',ServiceParameters:JSON.stringify({content,dataId})},s,deadline);
+        const chunk=mapResult(data,dataId);
+        retryAllowed=shareUrlRetryAllowed(data,chunk)&&retryAllowed;
+        for(const label of chunk.labels)textLabels.add(label);
+        if(chunk.decision==='rejected'||result.decision==='approved')result.decision=chunk.decision;
+      }
+      result.labels=[...textLabels];return {result,retryAllowed};
+    }
+    if(input.text.trim()) {
+      // The whole text is the cache unit, preserving context across edits and
+      // overlapping chunks; an unchanged substring cannot inherit approval.
+      const linkUrls=attachedWebUrls(input.linkUrls);
+      const key=cacheKey('text',input.text,s,'',linkUrls);let result=cachedApproval(key);
+      if(!result) {
+        const original=await scanText(input.text);result=original.result;
+        if(result.decision==='review'&&original.retryAllowed&&linkUrls.length) {
+          const replacement=withoutAttachedUrls(input.text,linkUrls);
+          if(replacement!==input.text) {
+            // The complete original was checked first. Recheck all surrounding
+            // prose, including phone/contact text, and even a URL-only marker.
+            // Only explicit nonLabel none/low results can pass mapResult; this
+            // exception never changes image decisions or retries recursively.
+            const checked=await scanText(replacement);
+            result={decision:checked.result.decision,labels:[...new Set([...result.labels,...checked.result.labels])]};
+          }
+        }
+        pendingApprovals.set(key,result);
+      }
+      merge(result);examined++;
     }
     let token:UploadToken|undefined;
     for(let index=0;index<input.images.length;index++) {
@@ -162,15 +276,21 @@ export async function moderateContent(input:ModerationInput):Promise<ModerationR
       if(!['image/png','image/jpeg','image/webp','image/gif'].includes(image.mime)){merge({decision:'review',labels:['unsupported_image']});continue;}
       const bytes=await getObject(image.storageKey);
       if(!bytes.length||bytes.length>20*1024*1024||imageMime(bytes)!==image.mime)throw safeError();
+      // Always read the object first: a reused storage key may contain new bytes.
+      const key=cacheKey('image',bytes,s,image.mime);const cached=cachedApproval(key)||pendingApprovals.get(key);
+      if(cached?.decision==='approved'){merge(cached);examined++;continue;}
       const meta=await sharp(bytes,{animated:true,limitInputPixels:100_000_000}).metadata();
       if(image.mime==='image/gif'||(meta.pages??1)>1||image.mime==='image/png'&&animatedPng(bytes)) {
         merge({decision:'review',labels:['animation_requires_review']});continue;
       }
       if(!token||token.expires*1000<Date.now()+30_000)token=uploadToken(await rpc('DescribeUploadToken',{},s,deadline));
       const objectName=await uploadImage(bytes,image.mime,token,deadline);const dataId=`${id}.i${index}`;
-      merge(mapResult(await rpc('ImageModeration',{Service:'postImageCheck',ServiceParameters:JSON.stringify({ossBucketName:token.bucket,ossObjectName:objectName,ossRegionId:token.region,dataId,infoType:'textInImage'})},s,deadline),dataId));examined++;
+      const result=mapResult(await rpc('ImageModeration',{Service:'postImageCheck',ServiceParameters:JSON.stringify({ossBucketName:token.bucket,ossObjectName:objectName,ossRegionId:token.region,dataId,infoType:'textInImage'})},s,deadline),dataId);
+      merge(result);pendingApprovals.set(key,result);examined++;
     }
     if(!examined)merge({decision:'review',labels:['no_complete_cloud_result']});
+    // A partial success from an otherwise failed/reviewed submission is not cached.
+    if(decision==='approved')saveApprovals(pendingApprovals);
     return {decision,labels:[...labels],provider};
-  } catch {throw safeError();}
+  } catch(error) {if(error instanceof ModerationTransientError)throw error;throw safeError();}
 }
