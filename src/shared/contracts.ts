@@ -40,7 +40,7 @@ export const contracts = {
   events_update: z.object({ id, recap:z.string().max(10000).optional(), cancelled:z.boolean().optional() }),
   search: z.object({ q:z.string().trim().min(1).max(200), type:z.enum(['all','posts','github','communities','events']).default('all'), city:z.string().optional(), tag:z.string().optional(), ...page }),
   profile_get: z.object({ id }),
-  profile_update: z.object({ name:z.string().trim().min(1).max(40), bio:z.string().max(500), city:z.string().max(60) }),
+  profile_update: z.object({ name:z.string().trim().min(1).max(40), bio:z.string().max(500), city:z.string().max(60), avatarMediaId:id.nullable().optional().describe('本人上传的头像图片 ID；null 移除头像，省略保留当前头像。资料和头像审核通过前仍展示原版本。') }),
   follows_set: z.object({ id, active:z.boolean() }),
   blocks_set: z.object({ id, active:z.boolean() }),
   grants_list: z.object({}),

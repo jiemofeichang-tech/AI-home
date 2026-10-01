@@ -6,6 +6,7 @@ import { objectStorageLocation } from './storage';
 import { human } from './permissions';
 import { fail, type Actor } from '../shared/contracts';
 import { EVENT_CONTACT_RETENTION_DAYS } from '../shared/privacy';
+import { publicationReason } from './moderation';
 
 async function privacyAccount(actor:Actor,client:PoolClient,lock:'SHARE'|'UPDATE') {
   human(actor);
@@ -37,7 +38,7 @@ export async function exportOwnData(actor:Actor) {
       blocks:await read('SELECT blocked_id FROM blocks WHERE blocker_id=$1'),
       notifications:await read('SELECT text,href,read_at,created_at FROM notifications WHERE user_id=$1 ORDER BY created_at'),
       reports:await read('SELECT post_id,reason,status,created_at FROM reports WHERE reporter_id=$1'),
-      moderation:await read('SELECT id,target_type,target_id,status,labels,reason,appeal_reason,created_at,updated_at FROM moderation_cases WHERE author_id=$1 ORDER BY created_at'),
+      moderation:(await read('SELECT id,target_type,target_id,status,appeal_reason,created_at,updated_at FROM moderation_cases WHERE author_id=$1 ORDER BY created_at')).map(entry=>({...entry,userReason:publicationReason({target_type:entry.target_type,appeal_reason:entry.appeal_reason},entry.status)})),
       contentDrafts:await read('SELECT id,kind,target_id,payload,status,created_at FROM content_drafts WHERE author_id=$1 ORDER BY created_at'),
       authorizations:await read('SELECT id,name,scopes,community_ids,expires_at,revoked_at,created_at FROM agent_grants WHERE user_id=$1'),
       oauthClients:await read('SELECT "clientId",name,"createdAt" FROM "oauthClient" WHERE "userId"=$1'),
@@ -132,7 +133,7 @@ async function closeAccountTransaction(actor:Actor) {
     await run(`UPDATE "user" SET name='已注销账户',email=$2,"emailVerified"=false,"phoneNumber"=NULL,"phoneNumberVerified"=false,image=NULL,"updatedAt"=now() WHERE id=$1`,[id,`${randomUUID()}@deleted.invalid`]);
     // This is deliberately last: guard triggers allow the scrub above, then
     // reject all later writes even from requests authenticated before closure.
-    await run(`UPDATE profiles SET handle=$2,bio='',city='',role='member',banned=true,privacy_version=NULL,privacy_accepted_at=NULL,last_seen_at=NULL,deleted_at=now() WHERE user_id=$1`,[id,`deleted_${randomUUID().replaceAll('-','')}`]);
+    await run(`UPDATE profiles SET handle=$2,bio='',city='',avatar_media_id=NULL,role='member',banned=true,privacy_version=NULL,privacy_accepted_at=NULL,last_seen_at=NULL,deleted_at=now() WHERE user_id=$1`,[id,`deleted_${randomUUID().replaceAll('-','')}`]);
     return {closed:true as const,pendingObjectDeletions:media.length,retainedPlaceholder:true as const};
   });
 }

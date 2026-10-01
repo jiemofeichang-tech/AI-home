@@ -1,0 +1,48 @@
+.updates {
+  display: grid;
+  gap: 6px;
+  margin: 12px 24px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--subtle);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.row svg {
+  flex: 0 0 auto;
+}
+
+.row span {
+  flex: 1 1 140px;
+  overflow-wrap: anywhere;
+}
+
+.row a,
+.row button {
+  color: var(--ink);
+  font-size: inherit;
+  white-space: nowrap;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.row button {
+  color: var(--muted);
+  padding: 0;
+}
+
+@media (max-width: 600px) {
+  .updates {
+    margin: 10px 16px;
+  }
+}

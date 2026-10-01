@@ -2,12 +2,14 @@
 
 import { useEffect,useRef,useState } from 'react';
 import Link from 'next/link';
-import { CheckCircle2,Clock,ShieldCheck } from 'lucide-react';
+import { CheckCircle2,Clock } from 'lucide-react';
 import type { Item } from '@/shared/contracts';
-import { moderationRiskNames } from './moderation-panel';
+import styles from './publication-updates.module.css';
 
 const names:Record<string,string>={post:'动态',comment:'评论',draft:'资料或活动',media:'图片描述',link:'链接预览'};
+const statusNames:Record<string,string>={pending:'处理中',review:'待确认',rejected:'未通过'};
 const unresolved=new Set(['pending','review','rejected']);
+function publicationName(item:Item) { return item.draftKind==='profile'?'个人资料':names[item.targetType]||'内容'; }
 function publishedUrl(item:Item) {
   if(item.targetType==='post')return `/posts/${item.targetId}`;
   if(item.postId)return `/posts/${item.postId}`;
@@ -68,23 +70,15 @@ export function PublicationUpdates({revision,submission,onPublished}:{revision:n
     void load();document.addEventListener('visibilitychange',visibilityChanged);
     return()=>{live=false;if(timer)clearTimeout(timer);controller?.abort();document.removeEventListener('visibilitychange',visibilityChanged);};
   },[revision,submission,onPublished]);
-  const outstanding=items.filter(item=>unresolved.has(item.status)&&!(item.status==='pending'&&['media','link'].includes(item.targetType)));
+  const outstanding=items.filter(item=>unresolved.has(item.status)&&!['media','link'].includes(item.targetType));
+  const progress=outstanding.length===1?`${publicationName(outstanding[0])}${statusNames[outstanding[0].status]}`:Object.entries(statusNames).map(([status,label])=>{
+    const count=outstanding.filter(item=>item.status===status).length;
+    return count?`${count} 项${label}`:'';
+  }).filter(Boolean).join(' · ');
   if(!outstanding.length&&!published&&!error)return null;
-  return <aside className="publication-updates" aria-label="我的发布进度">
-    {published&&<div className="publication-done" role="status"><CheckCircle2 size={17}/><span>{names[published.targetType]||'内容'}已发布</span><Link href={publishedUrl(published)}>查看</Link><button className="text-button" onClick={()=>setPublished(null)}>收起</button></div>}
-    {outstanding.slice(0,3).map(item=>{
-      const pending=item.status==='pending',review=item.status==='review',risk=moderationRiskNames(item.labels);
-      const statusNote=pending?'自动检查通过后按所选范围展示，无需再次提交。':review?`已转人工复核，需要管理员处理后才能公开。${item.appealReason?'申诉已提交。':'可补充申诉说明或撤回。'}`:'可提交申诉，申请管理员人工复核，或撤回这次提交。';
-      const scopeNote=['media','link'].includes(item.targetType)?'仅影响附加内容，原动态仍按原状态展示。':item.targetType==='draft'?'原有资料仍正常展示。':'';
-      return <div className={`publication-update ${pending?'':'needs-review'}`} key={item.id}>
-        <div className="publication-status">{pending?<Clock size={17}/>:<ShieldCheck size={17}/>}<strong>{pending?'正在自动安全检查，仅自己可见':review?'需要管理员人工复核':'内容已隔离，暂未公开'}</strong><span>{names[item.targetType]||'内容'}</span></div>
-        <p className="publication-preview">{String(item.text||'图片或引用内容').slice(0,240)}</p>
-        {item.reason&&<p className="publication-note">处理说明：{item.reason}</p>}
-        {risk&&<p className="publication-note">检测提示：{risk}</p>}
-        <div className="publication-note"><span>{statusNote}{scopeNote}</span><Link href="/moderation">{pending?'查看检查进度':review?'查看人工复核记录':'查看说明并申诉'}</Link></div>
-      </div>;
-    })}
-    {outstanding.length>3&&<Link className="text-button" href="/moderation">查看其余 {outstanding.length-3} 条发布记录</Link>}
-    {error&&<p className="publication-note" role="status">暂时无法更新发布状态，正在自动重试。<Link href="/moderation">查看记录</Link></p>}
+  return <aside className={styles.updates} aria-label="我的发布进度">
+    {published&&<div className={styles.row} role="status"><CheckCircle2 size={16} aria-hidden="true"/><span>{publicationName(published)}{published.draftKind==='profile'?'已更新':'已发布'}</span><Link href={publishedUrl(published)}>查看</Link><button type="button" onClick={()=>setPublished(null)}>收起</button></div>}
+    {!!outstanding.length&&<div className={styles.row} role="status"><Clock size={16} aria-hidden="true"/><span>{progress}</span><Link href="/moderation">我的发布</Link></div>}
+    {error&&<div className={styles.row} role="status"><span>暂时无法更新发布状态，正在重试。</span><Link href="/moderation">查看记录</Link></div>}
   </aside>;
 }

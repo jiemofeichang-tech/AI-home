@@ -31,14 +31,14 @@ async function publicUser(id:string,client?:PoolClient) {
 export async function postView(a:Actor,id:string,depth=0):Promise<Item> {
   const p=await readablePost(a,id);
   const [author,media,links,comments,reactions,counts]=await Promise.all([
-    publicUser(p.author_id),query("SELECT id,mime,bytes,CASE WHEN derivation_status='approved' THEN extracted_text ELSE '' END AS extracted_text,CASE WHEN derivation_status='approved' THEN description ELSE '' END AS description,status,error FROM media WHERE post_id=$1 AND moderation_status='approved'",[id]),
-    query("SELECT id,post_id,url,platform,CASE WHEN derivation_status='approved' THEN title ELSE '' END AS title,CASE WHEN derivation_status='approved' THEN description ELSE '' END AS description,CASE WHEN derivation_status='approved' THEN content ELSE '' END AS content,CASE WHEN derivation_status='approved' THEN metadata ELSE '{}'::jsonb END AS metadata,status,error,fetched_at FROM link_resources WHERE post_id=$1 AND moderation_status='approved'",[id]),
-    query(`SELECT c.id,c.body,c.created_at,c.agent_name,u.id AS author_id,u.name FROM comments c JOIN "user" u ON u.id=c.author_id WHERE post_id=$1 AND c.deleted_at IS NULL AND c.moderation_status='approved' AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$2 AND b.blocked_id=c.author_id) OR (b.blocked_id=$2 AND b.blocker_id=c.author_id)) ORDER BY c.created_at LIMIT 100`,[id,a.userId||'']),
+    publicUser(p.author_id),query("SELECT id,mime,bytes,CASE WHEN derivation_status='approved' THEN extracted_text ELSE '' END AS extracted_text,CASE WHEN derivation_status='approved' THEN description ELSE '' END AS description,status FROM media WHERE post_id=$1 AND moderation_status='approved'",[id]),
+    query("SELECT id,post_id,url,platform,CASE WHEN derivation_status='approved' THEN title ELSE '' END AS title,CASE WHEN derivation_status='approved' THEN description ELSE '' END AS description,CASE WHEN derivation_status='approved' THEN content ELSE '' END AS content,CASE WHEN derivation_status='approved' THEN metadata ELSE '{}'::jsonb END AS metadata,status,fetched_at FROM link_resources WHERE post_id=$1 AND moderation_status='approved'",[id]),
+    query(`SELECT c.id,c.body,c.created_at,c.agent_name,u.id AS author_id,u.name,u.image FROM comments c JOIN "user" u ON u.id=c.author_id WHERE post_id=$1 AND c.deleted_at IS NULL AND c.moderation_status='approved' AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$2 AND b.blocked_id=c.author_id) OR (b.blocked_id=$2 AND b.blocker_id=c.author_id)) ORDER BY c.created_at LIMIT 100`,[id,a.userId||'']),
     query('SELECT kind,count(*)::int AS count,bool_or(user_id=$2) AS mine FROM reactions WHERE post_id=$1 GROUP BY kind',[id,a.userId||'']),
     query("SELECT count(*)::int AS count FROM posts WHERE original_id=$1 AND deleted_at IS NULL AND moderation_status='approved' AND community_id IS NULL",[id])
   ]);
   const c=p.community_id?(await query('SELECT id,name,visibility FROM communities WHERE id=$1',[p.community_id]))[0]:null;
-  const processing=p.author_id===a.userId&&!a.grantId?await query(`SELECT id,kind,status,error FROM jobs WHERE target_id IN (SELECT id FROM media WHERE post_id=$1 UNION SELECT id FROM link_resources WHERE post_id=$1) AND status IN ('pending','processing','failed','blocked')`,[id]):[];
+  const processing=p.author_id===a.userId&&!a.grantId?await query(`SELECT id,kind,status FROM jobs WHERE target_id IN (SELECT id FROM media WHERE post_id=$1 UNION SELECT id FROM link_resources WHERE post_id=$1) AND status IN ('pending','processing','failed','blocked')`,[id]):[];
   return { ...p,author,community:c,media:media.map(m=>({...m,url:`/api/v1/media/${m.id}`})),links,comments,reactions,processing,repostCount:counts[0].count,original:p.original_id&&depth<8?await postView(a,p.original_id,depth+1):null };
 }
 async function safePosts(a:Actor,rows:Item[]) {
@@ -114,7 +114,7 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
         const id=uid();const tags=Array.from(new Set<string>((p.body.match(/#[\p{L}\p{N}_-]+/gu)||[]).map((s:string)=>s.slice(1))));
         await query('INSERT INTO posts(id,author_id,community_id,body,tags,original_id,agent_name,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[id,a.userId,p.communityId||null,p.body,tags,p.originalId||null,a.agentName||null,p.idempotencyKey||null],client);
         for(const mediaId of p.mediaIds) {
-          const updated=await query("UPDATE media SET post_id=$1,ai_consent=$4,status=CASE WHEN $4 THEN 'pending' ELSE 'ready' END WHERE id=$2 AND owner_id=$3 AND post_id IS NULL RETURNING id,ai_consent",[id,mediaId,a.userId,p.imageAnalysisConsent],client);
+          const updated=await query("UPDATE media SET post_id=$1,ai_consent=$4,status=CASE WHEN $4 THEN 'pending' ELSE 'ready' END WHERE id=$2 AND owner_id=$3 AND post_id IS NULL AND usage_kind='post' RETURNING id,ai_consent",[id,mediaId,a.userId,p.imageAnalysisConsent],client);
           if(!updated.length) fail(403,'图片不存在、已使用或不属于你');
           if(updated[0].ai_consent)await enqueue('image',mediaId,client);
         }
@@ -160,7 +160,7 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
     }
     case 'communities_members': {
       human(a);await communityAccess(a,p.id,true);const c=await communityAccess(a,p.id);
-      return {items:await query(`SELECT u.id,u.name,p.city,m.role,m.status FROM memberships m JOIN "user" u ON u.id=m.user_id JOIN profiles p ON p.user_id=u.id WHERE m.community_id=$1 AND (m.status='active' OR $2)`,[p.id,c.membership_role==='admin'])};
+      return {items:await query(`SELECT u.id,u.name,u.image,p.city,m.role,m.status FROM memberships m JOIN "user" u ON u.id=m.user_id JOIN profiles p ON p.user_id=u.id WHERE m.community_id=$1 AND (m.status='active' OR $2)`,[p.id,c.membership_role==='admin'])};
     }
     case 'communities_approve': {
       human(a);await communityAccess(a,p.id,true,true);
@@ -207,7 +207,7 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
     }
     case 'events_attendees': {
       human(a);const e=await eventView(a,p.id);await communityAccess(a,e.community_id,true,true);
-      return {items:await query(`SELECT u.id,CASE WHEN e.cancelled OR e.ends_at<now()-($2::int*interval '1 day') THEN u.name ELSE coalesce(r.attendee_name,u.name) END AS name,CASE WHEN e.cancelled OR e.ends_at<now()-($2::int*interval '1 day') THEN NULL ELSE r.phone_number END AS "phoneNumber",r.checked_in_at,r.created_at FROM registrations r JOIN "user" u ON u.id=r.user_id JOIN events e ON e.id=r.event_id WHERE event_id=$1 ORDER BY r.created_at`,[p.id,EVENT_CONTACT_RETENTION_DAYS])};
+      return {items:await query(`SELECT u.id,u.image,CASE WHEN e.cancelled OR e.ends_at<now()-($2::int*interval '1 day') THEN u.name ELSE coalesce(r.attendee_name,u.name) END AS name,CASE WHEN e.cancelled OR e.ends_at<now()-($2::int*interval '1 day') THEN NULL ELSE r.phone_number END AS "phoneNumber",r.checked_in_at,r.created_at FROM registrations r JOIN "user" u ON u.id=r.user_id JOIN events e ON e.id=r.event_id WHERE event_id=$1 ORDER BY r.created_at`,[p.id,EVENT_CONTACT_RETENTION_DAYS])};
     }
     case 'events_checkin': {
       human(a);const e=await eventView(a,p.id);await communityAccess(a,e.community_id,true,true);
@@ -256,7 +256,7 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
     }
     case 'notifications_read': human(a);await query('UPDATE notifications SET read_at=now() WHERE user_id=$1 AND read_at IS NULL',[a.userId]);return {ok:true};
     case 'reports_create': human(a);await readablePost(a,p.id);await query('INSERT INTO reports(id,reporter_id,post_id,reason) VALUES($1,$2,$3,$4)',[uid(),a.userId,p.id,p.reason]);return {ok:true};
-    case 'admin_overview': await adminAccess(a);return {reports:await query('SELECT * FROM reports ORDER BY created_at DESC LIMIT 100'),jobs:await query(`SELECT id,kind,status,error,attempts FROM jobs WHERE status IN ('failed','blocked') ORDER BY created_at DESC LIMIT 100`),usage:await query("SELECT key,count,updated_at FROM usage_counters WHERE key ~ '^sms:[0-9]{4}-[0-9]{2}-[0-9]{2}$' OR key ~ '^ai-image:[0-9]{4}-[0-9]{2}$' ORDER BY updated_at DESC LIMIT 40"),users:await query(`SELECT u.id,u.name,p.banned,p.role FROM "user" u JOIN profiles p ON p.user_id=u.id WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC LIMIT 100`)};
+    case 'admin_overview': await adminAccess(a);return {reports:await query('SELECT * FROM reports ORDER BY created_at DESC LIMIT 100'),jobs:await query(`SELECT id,kind,status,error,attempts FROM jobs WHERE status IN ('failed','blocked') ORDER BY created_at DESC LIMIT 100`),usage:await query("SELECT key,count,updated_at FROM usage_counters WHERE key ~ '^sms:[0-9]{4}-[0-9]{2}-[0-9]{2}$' OR key ~ '^ai-image:[0-9]{4}-[0-9]{2}$' ORDER BY updated_at DESC LIMIT 40"),users:await query(`SELECT u.id,u.name,u.image,p.banned,p.role FROM "user" u JOIN profiles p ON p.user_id=u.id WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC LIMIT 100`)};
     case 'admin_stats': return adminStats(a);
     case 'admin_moderate': {
       await adminAccess(a);if(p.userId===a.userId) fail(400,'不能封禁当前管理员');

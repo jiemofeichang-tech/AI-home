@@ -81,6 +81,17 @@ legend{font-size:13px;font-weight:600;padding:0 6px;color:var(--muted)}
 .avatar{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:50%;font-size:16px;font-weight:600;flex-shrink:0;background:var(--hover);color:var(--muted);box-shadow:inset 0 0 0 1px rgba(17,17,19,.04)}
 .avatar.small{width:28px;height:28px;font-size:12px}
 .avatar.large{width:72px;height:72px;font-size:28px}
+.avatar{overflow:hidden}
+.avatar>img{display:block;width:100%;height:100%;object-fit:cover;border-radius:inherit}
+.profile-avatar-editor{display:flex;align-items:flex-start;gap:20px;padding:24px 0 8px}
+.profile-avatar-controls{min-width:0;flex:1}
+.profile-avatar-actions{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:12px}
+.profile-avatar-controls p{font-size:12px;line-height:1.7;margin:10px 0 0}
+.avatar-file-input{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
+.avatar-preview-note{color:var(--text)}
+.profile-save-notice{font-size:13px;line-height:1.7;color:var(--text)}
+.profile-save-notice a{margin-left:8px;text-decoration:underline;text-underline-offset:3px}
+@media(max-width:400px){.profile-avatar-editor{gap:14px}.profile-avatar-actions{align-items:flex-start;gap:10px}.profile-avatar-actions .secondary{padding:9px 12px}}
 .composer-preview{display:flex;align-items:center;gap:12px;padding:16px 24px;border-bottom:1px solid var(--line)}
 .composer-preview>button:not(.icon-btn){text-align:left;flex:1;font-size:15px;color:var(--faint);padding:10px 0;transition:color .15s}
 .composer-preview>button:not(.icon-btn):hover{color:var(--muted)}

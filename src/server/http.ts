@@ -75,7 +75,7 @@ export async function handleApi(request:Request) {
         return Response.json({ok:true,cleared:rows.length},{headers:{'Cache-Control':'no-store'}});
       }
       if(path==='privacy/clear-profile'&&request.method==='POST') {
-        await transaction(async client=>{await query('SELECT user_id FROM profiles WHERE user_id=$1 FOR UPDATE',[owner.userId],client);await query("DELETE FROM content_draft_heads WHERE kind='profile' AND target_id=$1",[owner.userId],client);await query("UPDATE content_drafts SET status='deleted',payload='{}' WHERE author_id=$1 AND kind='profile'",[owner.userId],client);await query('UPDATE "user" SET name=$2,image=NULL WHERE id=$1',[owner.userId,`社区成员${randomUUID().slice(0,6)}`],client);await query("UPDATE profiles SET bio='',city='' WHERE user_id=$1",[owner.userId],client);});
+        await transaction(async client=>{await query('SELECT user_id FROM profiles WHERE user_id=$1 FOR UPDATE',[owner.userId],client);await query("DELETE FROM content_draft_heads WHERE kind='profile' AND target_id=$1",[owner.userId],client);await query("UPDATE content_drafts SET status='deleted',payload='{}' WHERE author_id=$1 AND kind='profile'",[owner.userId],client);await query('UPDATE "user" SET name=$2,image=NULL WHERE id=$1',[owner.userId,`社区成员${randomUUID().slice(0,6)}`],client);await query("UPDATE profiles SET bio='',city='',avatar_media_id=NULL WHERE user_id=$1",[owner.userId],client);});
         return Response.json({ok:true},{headers:{'Cache-Control':'no-store'}});
       }
       if(path==='privacy/withdraw-image-ai'&&request.method==='POST') {
@@ -133,7 +133,16 @@ export async function handleApi(request:Request) {
     if(path.startsWith('media/')&&request.method==='GET') {
       const [m]=await query('SELECT * FROM media WHERE id=$1',[path.split('/')[1]]);if(!m) fail(404,'图片不存在');
       if(actor.grantId) scope(actor,'content:read');
-      if(m.post_id) await readablePost(actor,m.post_id);else if(m.owner_id!==user(actor)) fail(403,'无权读取图片');
+      if(m.post_id) await readablePost(actor,m.post_id);
+      else {
+        const currentAvatar=await query(`SELECT 1 FROM profiles p JOIN "user" u ON u.id=p.user_id
+          JOIN content_draft_heads h ON h.kind='profile' AND h.target_id=p.user_id
+          JOIN content_drafts d ON d.id=h.current_draft_id AND d.status='approved'
+          WHERE p.user_id=$1 AND p.deleted_at IS NULL AND p.avatar_media_id=$2 AND u.image=$3
+          AND d.author_id=p.user_id AND d.payload->>'avatarMediaId'=$2`,[m.owner_id,m.id,`/api/v1/media/${m.id}`]);
+        const publiclyApproved=m.usage_kind==='avatar'&&m.moderation_status==='approved'&&currentAvatar.length>0;
+        if(!publiclyApproved&&(actor.grantId||m.owner_id!==user(actor)))fail(403,'无权读取图片');
+      }
       const data=await getObject(m.storage_key);return new Response(new Uint8Array(data),{headers:{'Content-Type':m.mime,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
     }
     if(path==='oauth/consent'&&request.method==='POST') {

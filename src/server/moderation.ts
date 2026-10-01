@@ -13,6 +13,14 @@ type Case={id:string;target_type:TargetType;target_id:string;author_id:string;st
 type Target={author_id:string;text:string;displayText?:string;linkUrls?:string[];deleted_at:Date|null;moderation_status:string;images:{id:string;storageKey:string;mime:string}[];post_id?:string;community_id?:string|null;parentGeneration?:number;kind?:string;target_id?:string};
 const statuses=new Set<Status>(['pending','review','rejected','approved','deleted']);
 const unavailableReason='自动审核暂不可用，内容已隔离，请等待人工审核。';
+export function publicationReason(entry:{target_type:string;appeal_reason?:string},status:string) {
+  if(status==='pending')return '正在检查，完成后会自动更新发布状态。';
+  if(status==='approved')return entry.target_type==='draft'?'资料已更新。':'已通过检查，按原来的发布范围展示。';
+  if(status==='deleted')return '本次提交已撤回或移除。';
+  if(entry.appeal_reason)return '你的说明已收到，正在等待管理员复核。';
+  if(status==='rejected')return '这次提交暂未通过内容检查。你可以说明内容背景，申请管理员复核。';
+  return '这次提交需要管理员复核，暂未公开。你可以补充说明或稍后查看结果。';
+}
 
 async function queueCase(id:string,client?:PoolClient) {
   await query(`INSERT INTO jobs(id,kind,target_id) VALUES($1,'moderation',$2)
@@ -127,14 +135,16 @@ export async function moderationList(actor:Actor,input:{mine?:boolean;status?:st
     const removed=!target||!!target.deleted_at||entry.status==='deleted';
     // A deletion may commit after the live-target SQL predicate was evaluated.
     if(input.status==='actionable'&&(removed||target.moderation_status==='deleted'))continue;
-    const events=await query(`SELECT h.id,h.action,h.status,h.reason,h.created_at AS "createdAt",u.name AS "actorName"
+    const events=input.mine?undefined:await query(`SELECT h.id,h.action,h.status,h.reason,h.created_at AS "createdAt",u.name AS "actorName"
       FROM moderation_history h LEFT JOIN "user" u ON u.id=h.actor_id WHERE h.case_id=$1 ORDER BY h.created_at DESC,h.id DESC LIMIT 30`,[entry.id]);
+    const visibleStatus=removed?'deleted':entry.status;
     items.push({id:entry.id,targetType:entry.target_type,targetId:entry.target_id,authorId:entry.author_id,authorName:author?.name||'社区成员',
-      text:removed?'':target.displayText??target.text,images:removed?[]:target.images.map(image=>image.id),status:removed?'deleted':entry.status,labels:entry.labels,reason:entry.reason,appealReason:entry.appeal_reason,history:events,
-      revision:entry.revision,provider:entry.provider,createdAt:entry.created_at,updatedAt:entry.updated_at,reviewedBy:entry.reviewed_by,
+      text:removed?'':target.displayText??target.text,images:removed?[]:target.images.map(image=>image.id),status:visibleStatus,appealReason:entry.appeal_reason,
+      userReason:publicationReason(entry,visibleStatus),createdAt:entry.created_at,updatedAt:entry.updated_at,
+      ...(!input.mine?{labels:entry.labels,reason:entry.reason,history:events,revision:entry.revision,provider:entry.provider,reviewedBy:entry.reviewed_by}:{}),
       ...(target?.kind?{draftKind:target.kind,resultTargetId:target.target_id}:{}),...(target?.post_id?{postId:target.post_id}:{}),...(entry.target_type==='post'?{postCommunityId:target?.community_id||null}:{})});
   }
-  return {items,provider:moderationProviderStatus()};
+  return {items,...(!input.mine?{provider:moderationProviderStatus()}: {})};
 }
 
 export async function moderationDecide(actor:Actor,input:{id:string;decision:'approve'|'delete';reason:string}) {
@@ -223,7 +233,12 @@ export async function moderationMediaAccess(actor:Actor,mediaRow:Item):Promise<b
     if(!post||post.deleted_at)return false;
   }
   if(mediaRow.owner_id===actor.userId)return true;
-  if(!mediaRow.post_id)return false;
+  if(!mediaRow.post_id) {
+    const [profile]=await query('SELECT role FROM profiles WHERE user_id=$1',[actor.userId]);
+    if(profile?.role!=='admin'||mediaRow.usage_kind!=='avatar')return false;
+    return (await query(`SELECT 1 FROM content_drafts d JOIN moderation_cases c ON c.target_type='draft' AND c.target_id=d.id
+      WHERE d.kind='profile' AND d.author_id=$1 AND d.payload->>'avatarMediaId'=$2 AND d.status<>'deleted' AND c.status<>'deleted'`,[mediaRow.owner_id,mediaRow.id])).length>0;
+  }
   if(!(await query("SELECT 1 FROM moderation_cases WHERE target_type='post' AND target_id=$1 AND status<>'deleted'",[mediaRow.post_id])).length)return false;
   const [profile]=await query('SELECT role FROM profiles WHERE user_id=$1',[actor.userId]);
   return profile?.role==='admin';
