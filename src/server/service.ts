@@ -10,6 +10,7 @@ import { createInvitations,listInvitations,revokeInvitation } from './invitation
 import { enqueueModeration,moderationList,moderationDecide,moderationAppeal,moderationRetry,moderationWithdraw } from './moderation';
 import { submitModerationDraft } from './moderation-drafts';
 import { adminStats } from './admin-stats';
+import { adminContentList,adminContentModerate,queueContentIndex } from './admin-content';
 
 const uid=()=>randomUUID();
 export const digest=(s:string)=>createHash('sha256').update(s).digest('hex');
@@ -33,9 +34,9 @@ export async function postView(a:Actor,id:string,depth=0):Promise<Item> {
   const [author,media,links,comments,reactions,counts]=await Promise.all([
     publicUser(p.author_id),query("SELECT id,mime,bytes,CASE WHEN derivation_status='approved' THEN extracted_text ELSE '' END AS extracted_text,CASE WHEN derivation_status='approved' THEN description ELSE '' END AS description,status FROM media WHERE post_id=$1 AND moderation_status='approved'",[id]),
     query("SELECT id,post_id,url,platform,CASE WHEN derivation_status='approved' THEN title ELSE '' END AS title,CASE WHEN derivation_status='approved' THEN description ELSE '' END AS description,CASE WHEN derivation_status='approved' THEN content ELSE '' END AS content,CASE WHEN derivation_status='approved' THEN metadata ELSE '{}'::jsonb END AS metadata,status,fetched_at FROM link_resources WHERE post_id=$1 AND moderation_status='approved'",[id]),
-    query(`SELECT c.id,c.body,c.created_at,c.agent_name,u.id AS author_id,u.name,u.image FROM comments c JOIN "user" u ON u.id=c.author_id WHERE post_id=$1 AND c.deleted_at IS NULL AND c.moderation_status='approved' AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$2 AND b.blocked_id=c.author_id) OR (b.blocked_id=$2 AND b.blocker_id=c.author_id)) ORDER BY c.created_at LIMIT 100`,[id,a.userId||'']),
+    query(`SELECT c.id,c.body,c.created_at,c.agent_name,u.id AS author_id,u.name,u.image FROM comments c JOIN "user" u ON u.id=c.author_id WHERE post_id=$1 AND c.deleted_at IS NULL AND c.hidden_at IS NULL AND c.moderation_status='approved' AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$2 AND b.blocked_id=c.author_id) OR (b.blocked_id=$2 AND b.blocker_id=c.author_id)) ORDER BY c.created_at LIMIT 100`,[id,a.userId||'']),
     query('SELECT kind,count(*)::int AS count,bool_or(user_id=$2) AS mine FROM reactions WHERE post_id=$1 GROUP BY kind',[id,a.userId||'']),
-    query("SELECT count(*)::int AS count FROM posts WHERE original_id=$1 AND deleted_at IS NULL AND moderation_status='approved' AND community_id IS NULL",[id])
+    query(`SELECT count(*)::int AS count FROM posts p WHERE p.original_id=$1 AND p.community_id IS NULL AND ${visiblePostSQL('p','$2','$3','$4')}`,[id,a.userId||'',a.communityIds||[],!!a.grantId])
   ]);
   const c=p.community_id?(await query('SELECT id,name,visibility FROM communities WHERE id=$1',[p.community_id]))[0]:null;
   const processing=p.author_id===a.userId&&!a.grantId?await query(`SELECT id,kind,status FROM jobs WHERE target_id IN (SELECT id FROM media WHERE post_id=$1 UNION SELECT id FROM link_resources WHERE post_id=$1) AND status IN ('pending','processing','failed','blocked')`,[id]):[];
@@ -251,13 +252,17 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
     }
     case 'grants_revoke': human(a);await transaction(async client=>{const [g]=await query('UPDATE agent_grants SET revoked_at=now() WHERE id=$1 AND user_id=$2 RETURNING oauth_client_id',[p.id,a.userId],client);if(g?.oauth_client_id){await query('DELETE FROM "oauthRefreshToken" WHERE "userId"=$1 AND "clientId"=$2',[a.userId,g.oauth_client_id],client);await query('DELETE FROM "oauthConsent" WHERE "userId"=$1 AND "clientId"=$2',[a.userId,g.oauth_client_id],client);}});return {ok:true};
     case 'notifications_list': {
-      human(a);const rows=await query('SELECT * FROM notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50',[a.userId]);const items=[];
+      human(a);const rows=await query(`SELECT n.* FROM notifications n WHERE n.user_id=$1 AND (n.comment_id IS NULL OR EXISTS (
+        SELECT 1 FROM comments c WHERE c.id=n.comment_id AND c.hidden_at IS NULL AND c.deleted_at IS NULL AND c.moderation_status='approved'
+        AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$1 AND b.blocked_id=c.author_id) OR (b.blocked_id=$1 AND b.blocker_id=c.author_id)))) ORDER BY n.created_at DESC LIMIT 50`,[a.userId]);const items=[];
       for(const n of rows) {try {if(n.href.startsWith('/posts/')) await readablePost(a,n.href.split('/')[2]);items.push(n);} catch {}}return {items};
     }
     case 'notifications_read': human(a);await query('UPDATE notifications SET read_at=now() WHERE user_id=$1 AND read_at IS NULL',[a.userId]);return {ok:true};
     case 'reports_create': human(a);await readablePost(a,p.id);await query('INSERT INTO reports(id,reporter_id,post_id,reason) VALUES($1,$2,$3,$4)',[uid(),a.userId,p.id,p.reason]);return {ok:true};
     case 'admin_overview': await adminAccess(a);return {reports:await query('SELECT * FROM reports ORDER BY created_at DESC LIMIT 100'),jobs:await query(`SELECT id,kind,status,error,attempts FROM jobs WHERE status IN ('failed','blocked') ORDER BY created_at DESC LIMIT 100`),usage:await query("SELECT key,count,updated_at FROM usage_counters WHERE key ~ '^sms:[0-9]{4}-[0-9]{2}-[0-9]{2}$' OR key ~ '^ai-image:[0-9]{4}-[0-9]{2}$' ORDER BY updated_at DESC LIMIT 40"),users:await query(`SELECT u.id,u.name,u.image,p.banned,p.role FROM "user" u JOIN profiles p ON p.user_id=u.id WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC LIMIT 100`)};
     case 'admin_stats': return adminStats(a);
+    case 'admin_content_list': return adminContentList(a,{targetType:p.targetType,status:p.status,q:p.q,limit:p.limit,cursor:p.cursor});
+    case 'admin_content_moderate': return adminContentModerate(a,{targetType:p.targetType,targetId:p.targetId,decision:p.decision,reason:p.reason});
     case 'admin_moderate': {
       await adminAccess(a);if(p.userId===a.userId) fail(400,'不能封禁当前管理员');
       return transaction(async client=>{
@@ -267,7 +272,7 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
           await query("UPDATE posts SET deleted_at=now(),moderation_status='deleted' WHERE id=$1",[p.postId],client);
           const cases=await query("UPDATE moderation_cases SET status='deleted',reason='管理员根据举报下架内容。',reviewed_by=$2,revision=revision+1,generation=generation+1,updated_at=now() WHERE target_type='post' AND target_id=$1 RETURNING id",[p.postId,a.userId],client);
           for(const item of cases)await query("INSERT INTO moderation_history(id,case_id,actor_id,action,status,reason) VALUES($1,$2,$3,'report_delete','deleted','管理员根据举报下架内容。')",[uid(),item.id,a.userId],client);
-          await enqueue('index',p.postId,client);
+          await queueContentIndex(p.postId,client);
         }
         if(p.userId&&p.banned!==undefined) {
           const [target]=await query('SELECT role,deleted_at FROM profiles WHERE user_id=$1 FOR UPDATE',[p.userId],client);if(!target||target.deleted_at)fail(404,'用户不存在或已注销');

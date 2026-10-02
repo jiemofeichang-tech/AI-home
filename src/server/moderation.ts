@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { query, transaction } from './db';
-import { active, adminAccess, human, readablePost } from './permissions';
+import { active, adminAccess, human, readablePost,unavailablePostSQL } from './permissions';
+import { queueContentIndex } from './admin-content';
 import { fail, type Actor, type Item } from '../shared/contracts';
 import { moderateContent, moderationProviderStatus, ModerationTransientError } from './moderation-provider';
 import { readModerationDraft, applyModerationDraft } from './moderation-drafts';
@@ -10,7 +11,7 @@ import { extractWebUrls,isLoginPageUrl } from '../shared/links';
 type TargetType='post'|'comment'|'draft'|'media'|'link';
 type Status='pending'|'review'|'rejected'|'approved'|'deleted';
 type Case={id:string;target_type:TargetType;target_id:string;author_id:string;status:Status;labels:string[];reason:string;appeal_reason:string;provider:string;reviewed_by:string|null;revision:number;generation:number;created_at:Date;updated_at:Date};
-type Target={author_id:string;text:string;displayText?:string;linkUrls?:string[];deleted_at:Date|null;moderation_status:string;images:{id:string;storageKey:string;mime:string}[];post_id?:string;community_id?:string|null;parentGeneration?:number;kind?:string;target_id?:string};
+type Target={author_id:string;text:string;displayText?:string;linkUrls?:string[];deleted_at:Date|null;hidden_at?:Date|null;moderation_status:string;images:{id:string;storageKey:string;mime:string}[];post_id?:string;community_id?:string|null;parentGeneration?:number;kind?:string;target_id?:string};
 const statuses=new Set<Status>(['pending','review','rejected','approved','deleted']);
 const unavailableReason='自动审核暂不可用，内容已隔离，请等待人工审核。';
 export function publicationReason(entry:{target_type:string;appeal_reason?:string},status:string) {
@@ -62,7 +63,7 @@ async function readTarget(entry:Case,client?:PoolClient):Promise<Target|undefine
   const table=entry.target_type==='post'?'posts':'comments';
   const [row]=await query(`SELECT * FROM ${table} WHERE id=$1${client?' FOR UPDATE':''}`,[entry.target_id],client);
   if(!row)return undefined;
-  if(entry.target_type==='comment')return {author_id:row.author_id,text:[row.body,row.agent_name||''].join('\n'),deleted_at:row.deleted_at,moderation_status:row.moderation_status,images:[],post_id:row.post_id};
+  if(entry.target_type==='comment')return {author_id:row.author_id,text:[row.body,row.agent_name||''].join('\n'),deleted_at:row.deleted_at,hidden_at:row.hidden_at,moderation_status:row.moderation_status,images:[],post_id:row.post_id};
   const media=await query('SELECT id,storage_key,mime FROM media WHERE post_id=$1 ORDER BY created_at,id',[row.id],client);
   const links=await query('SELECT url FROM link_resources WHERE post_id=$1 ORDER BY id',[row.id],client);
   const bodyUrls=new Set(extractWebUrls(row.body).map(url=>new URL(url).href));
@@ -100,11 +101,12 @@ async function syncTarget(entry:Case,status:Status,client:PoolClient) {
   if(entry.target_type==='post') {
     await query('UPDATE media SET moderation_status=$2 WHERE post_id=$1',[entry.target_id,status],client);
     await query('UPDATE link_resources SET moderation_status=$2 WHERE post_id=$1',[entry.target_id,status],client);
-    await queueIndex(entry.target_id,client);
+    await queueContentIndex(entry.target_id,client);
   } else if(status==='approved'&&entry.status!=='approved') {
     const [post]=await query(`SELECT p.id,p.author_id FROM posts p JOIN comments c ON c.post_id=p.id
-      WHERE c.id=$1 AND p.deleted_at IS NULL AND p.moderation_status='approved'`,[entry.target_id],client);
-    if(post&&post.author_id!==entry.author_id)await query("INSERT INTO notifications(id,user_id,text,href) VALUES($1,$2,'你的帖子有一条新回复',$3)",[randomUUID(),post.author_id,`/posts/${post.id}`],client);
+      WHERE c.id=$1 AND c.hidden_at IS NULL AND c.deleted_at IS NULL AND c.moderation_status='approved'
+      AND p.deleted_at IS NULL AND p.hidden_at IS NULL AND p.moderation_status='approved' AND NOT ${unavailablePostSQL('p')}`,[entry.target_id],client);
+    if(post&&post.author_id!==entry.author_id)await query("INSERT INTO notifications(id,user_id,text,href,comment_id) VALUES($1,$2,'你的帖子有一条新回复',$3,$4)",[randomUUID(),post.author_id,`/posts/${post.id}`,entry.target_id],client);
   }
 }
 async function recordAudit(actor:Actor,action:string,id:string,client:PoolClient) {
@@ -138,9 +140,15 @@ export async function moderationList(actor:Actor,input:{mine?:boolean;status?:st
     const events=input.mine?undefined:await query(`SELECT h.id,h.action,h.status,h.reason,h.created_at AS "createdAt",u.name AS "actorName"
       FROM moderation_history h LEFT JOIN "user" u ON u.id=h.actor_id WHERE h.case_id=$1 ORDER BY h.created_at DESC,h.id DESC LIMIT 30`,[entry.id]);
     const visibleStatus=removed?'deleted':entry.status;
+    const postId=entry.target_type==='post'?entry.target_id:target?.post_id;
+    const [visibility]=postId?await query(`SELECT ${unavailablePostSQL('p')} AS unavailable,(WITH RECURSIVE ancestors AS (
+      SELECT id,original_id,hidden_at,0 AS depth FROM posts WHERE id=p.id UNION ALL SELECT p.id,p.original_id,p.hidden_at,a.depth+1 FROM posts p JOIN ancestors a ON p.id=a.original_id WHERE a.depth<9
+      ) SELECT hidden_at FROM ancestors WHERE hidden_at IS NOT NULL ORDER BY depth LIMIT 1) AS hidden_at FROM posts p WHERE p.id=$1`,[postId]):[];
+    const hiddenAt=target?.hidden_at||visibility?.hidden_at||null;
+    const unavailable=!!hiddenAt||!!visibility?.unavailable;
     items.push({id:entry.id,targetType:entry.target_type,targetId:entry.target_id,authorId:entry.author_id,authorName:author?.name||'社区成员',
       text:removed?'':target.displayText??target.text,images:removed?[]:target.images.map(image=>image.id),status:visibleStatus,appealReason:entry.appeal_reason,
-      userReason:publicationReason(entry,visibleStatus),createdAt:entry.created_at,updatedAt:entry.updated_at,
+      hiddenAt,unavailable,userReason:removed?publicationReason(entry,'deleted'):hiddenAt?'该内容已被管理员隐藏，暂不公开。':unavailable&&visibleStatus==='approved'?'原帖或所属内容暂不可见，这条内容暂不公开。':publicationReason(entry,visibleStatus),createdAt:entry.created_at,updatedAt:entry.updated_at,
       ...(!input.mine?{labels:entry.labels,reason:entry.reason,history:events,revision:entry.revision,provider:entry.provider,reviewedBy:entry.reviewed_by}:{}),
       ...(target?.kind?{draftKind:target.kind,resultTargetId:target.target_id}:{}),...(target?.post_id?{postId:target.post_id}:{}),...(entry.target_type==='post'?{postCommunityId:target?.community_id||null}:{})});
   }

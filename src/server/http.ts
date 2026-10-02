@@ -16,6 +16,7 @@ import { recordPresence } from './admin-stats';
 
 export const routes:[string,string,Action][]=[
   ['GET','admin/stats','admin_stats'],
+  ['GET','admin/content','admin_content_list'],['POST','admin/content/moderate','admin_content_moderate'],
   ['GET','moderation','moderation_list'],['POST','admin/moderation/:id/decision','moderation_decide'],['POST','moderation/:id/appeal','moderation_appeal'],['POST','admin/moderation/:id/retry','moderation_retry'],['POST','moderation/:id/withdraw','moderation_withdraw'],
   ['GET','admin/invitations','invitations_list'],['POST','admin/invitations','invitations_create'],['DELETE','admin/invitations/:id','invitations_revoke'],
   ['POST','communities/:id/remove','communities_remove'],

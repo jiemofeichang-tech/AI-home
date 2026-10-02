@@ -25,8 +25,8 @@ export async function exportOwnData(actor:Actor) {
     return {
       formatVersion:1,exportedAt:new Date().toISOString(),
       profile:{id:p.user_id,name:p.name,phoneNumber:p.phoneNumber,image:p.image,handle:p.handle,bio:p.bio,city:p.city,role:p.role,banned:p.banned,createdAt:p.account_created_at,lastSeenAt:p.last_seen_at,privacyVersion:p.privacy_version,privacyAcceptedAt:p.privacy_accepted_at},
-      posts:await read('SELECT id,community_id,body,tags,original_id,agent_name,deleted_at,created_at FROM posts WHERE author_id=$1 ORDER BY created_at'),
-      comments:await read('SELECT id,post_id,body,agent_name,deleted_at,created_at FROM comments WHERE author_id=$1 ORDER BY created_at'),
+      posts:await read('SELECT id,community_id,body,tags,original_id,agent_name,hidden_at,deleted_at,created_at FROM posts WHERE author_id=$1 ORDER BY created_at'),
+      comments:await read('SELECT id,post_id,body,agent_name,hidden_at,deleted_at,created_at FROM comments WHERE author_id=$1 ORDER BY created_at'),
       media:await read('SELECT id,post_id,mime,bytes,original_name,extracted_text,description,status,ai_consent,created_at FROM media WHERE owner_id=$1 ORDER BY created_at'),
       links:await read('SELECT l.post_id,l.url,l.platform,l.title,l.description,l.content,l.status FROM link_resources l JOIN posts p ON p.id=l.post_id WHERE p.author_id=$1'),
       memberships:await read('SELECT community_id,role,status,created_at FROM memberships WHERE user_id=$1'),

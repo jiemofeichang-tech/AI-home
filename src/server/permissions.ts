@@ -25,7 +25,7 @@ export async function communityAccess(actor:Actor,id:string,write=false,admin=fa
 }
 export async function readablePost(actor:Actor,id:string,client?:PoolClient,depth=0):Promise<Item> {
   if(depth>8) fail(400,'转发层级过深');
-  const [p]=await query("SELECT * FROM posts WHERE id=$1 AND deleted_at IS NULL AND moderation_status='approved'",[id],client);
+  const [p]=await query("SELECT * FROM posts WHERE id=$1 AND deleted_at IS NULL AND hidden_at IS NULL AND moderation_status='approved'",[id],client);
   if(!p) fail(404,'帖子不存在或已被删除');
   if(p.community_id) await communityAccess(actor,p.community_id,false,false,client);
   if(actor.userId) {
@@ -43,12 +43,20 @@ export async function adminAccess(actor:Actor) {
 export function visiblePostSQL(alias:string,uid:string,groups:string,agent:string) {
   return `NOT EXISTS (
     WITH RECURSIVE ancestors AS (
-      SELECT id,original_id,community_id,author_id,deleted_at,moderation_status,0 AS depth FROM posts WHERE id=${alias}.id
-      UNION ALL SELECT o.id,o.original_id,o.community_id,o.author_id,o.deleted_at,o.moderation_status,x.depth+1 FROM posts o JOIN ancestors x ON o.id=x.original_id WHERE x.depth<9
+      SELECT id,original_id,community_id,author_id,deleted_at,hidden_at,moderation_status,0 AS depth FROM posts WHERE id=${alias}.id
+      UNION ALL SELECT o.id,o.original_id,o.community_id,o.author_id,o.deleted_at,o.hidden_at,o.moderation_status,x.depth+1 FROM posts o JOIN ancestors x ON o.id=x.original_id WHERE x.depth<9
     ) SELECT 1 FROM ancestors x LEFT JOIN communities ac ON ac.id=x.community_id
       LEFT JOIN memberships am ON am.community_id=ac.id AND am.user_id=${uid}
-    WHERE x.deleted_at IS NOT NULL OR x.moderation_status<>'approved' OR x.depth>=9 OR ac.moderation_removed_at IS NOT NULL
+    WHERE x.deleted_at IS NOT NULL OR x.hidden_at IS NOT NULL OR x.moderation_status<>'approved' OR x.depth>=9 OR ac.moderation_removed_at IS NOT NULL
       OR (ac.visibility='private' AND (am.status IS DISTINCT FROM 'active' OR (${agent}::boolean AND NOT(ac.id=ANY(${groups}::text[])))))
       OR EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=${uid} AND b.blocked_id=x.author_id) OR (b.blocked_id=${uid} AND b.blocker_id=x.author_id))
   )`;
+}
+/** Visibility gate without viewer ACL, for administrators and index removal. */
+export function unavailablePostSQL(alias:string) {
+  return `EXISTS (WITH RECURSIVE ancestors AS (
+    SELECT id,original_id,community_id,deleted_at,hidden_at,moderation_status,0 AS depth FROM posts WHERE id=${alias}.id
+    UNION ALL SELECT p.id,p.original_id,p.community_id,p.deleted_at,p.hidden_at,p.moderation_status,a.depth+1 FROM posts p JOIN ancestors a ON p.id=a.original_id WHERE a.depth<9
+  ) SELECT 1 FROM ancestors a LEFT JOIN communities c ON c.id=a.community_id
+    WHERE a.deleted_at IS NOT NULL OR a.hidden_at IS NOT NULL OR a.moderation_status<>'approved' OR a.depth>=9 OR c.moderation_removed_at IS NOT NULL)`;
 }

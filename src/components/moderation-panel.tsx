@@ -37,7 +37,7 @@ export function ModerationPanel({admin=false}:{admin?:boolean}) {
         if(!live||current.signal.aborted)return;
         setItems(result.items);setProvider(result.provider||{});setError('');loadedQuery.current=query;
         const pending=result.items.some((item:Item)=>item.status==='pending');
-        shouldPoll=admin||pending||result.items.some((item:Item)=>item.status==='review');
+        shouldPoll=admin||pending||result.items.some((item:Item)=>item.status==='review'||item.hiddenAt||item.unavailable);
         if(!admin&&pending)pollDelay=5000;
       } catch(e) {
         if(live&&!current.signal.aborted){
@@ -81,8 +81,8 @@ export function ModerationPanel({admin=false}:{admin?:boolean}) {
 function ModerationItem({item,admin,onChange}:{item:Item;admin:boolean;onChange:(message:string)=>void}) {
   const [reason,setReason]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[showImages,setShowImages]=useState(false),[previewOpen,setPreviewOpen]=useState(!admin),[historyOpen,setHistoryOpen]=useState(false),[manageOpen,setManageOpen]=useState(false);
   const terminal=item.status==='deleted',derived=['media','link'].includes(item.targetType),profile=item.draftKind==='profile',needsDecision=['review','rejected'].includes(item.status),canAppeal=!admin&&needsDecision&&!item.appealReason;
-  const userStatus=item.status==='approved'?(profile?'已更新':'已发布'):userStatusNames[item.status]||'处理中';
-  const userNote=item.status==='pending'?(profile?'正在处理这次资料修改，通过后会更新，无需再次提交。':derived?'附加内容正在处理，不影响动态正文和原图。':'正在处理，通过后会按所选范围发布，无需再次提交。'):needsDecision?(item.userReason||(item.status==='review'?'待管理员确认。你可以补充申诉说明，或撤回这次提交。':'这次提交未通过。你可以补充申诉说明，或撤回后修改再提交。')):'';
+  const userStatus=!terminal&&item.hiddenAt?'已隐藏':item.status==='approved'?(item.unavailable?'暂不显示':profile?'已更新':'已发布'):userStatusNames[item.status]||'处理中';
+  const userNote=!terminal&&item.hiddenAt?(item.userReason||'该内容已被管理员隐藏，暂不公开。'):item.status==='approved'&&item.unavailable?(item.userReason||'所属帖子或引用来源暂不可见，此内容暂不展示。'):item.status==='pending'?(profile?'正在处理这次资料修改，通过后会更新，无需再次提交。':derived?'附加内容正在处理，不影响动态正文和原图。':'正在处理，通过后会按所选范围发布，无需再次提交。'):needsDecision?(item.userReason||(item.status==='review'?'待管理员确认。你可以补充申诉说明，或撤回这次提交。':'这次提交未通过。你可以补充申诉说明，或撤回后修改再提交。')):'';
   async function act(action:'approve'|'delete'|'appeal'|'retry'|'withdraw') {
     if(!admin&&!['appeal','withdraw'].includes(action))return;
     if(!['retry','withdraw'].includes(action)&&reason.trim().length<2){setError(admin?'请填写审核依据和处理原因。':'请填写申诉理由。');return;}
@@ -93,7 +93,7 @@ function ModerationItem({item,admin,onChange}:{item:Item;admin:boolean;onChange:
       else if(action==='appeal')await request(`moderation/${item.id}/appeal`,{reason});
       else if(action==='retry')await request(`admin/moderation/${item.id}/retry`,{});
       else await request(`admin/moderation/${item.id}/decision`,{decision:action,reason});
-      setReason('');onChange(action==='approve'?(profile?'审核通过，个人资料已更新。':'审核通过，内容已按发布范围展示。'):action==='delete'?'内容已删除。':action==='withdraw'?'提交已撤回。':action==='appeal'?'申诉已提交，等待管理员复核。':'已重新加入审核队列。');
+      setReason('');onChange(action==='approve'?(item.hiddenAt?'审核通过，内容仍保持隐藏。':profile?'审核通过，个人资料已更新。':'审核通过，内容已按发布范围展示。'):action==='delete'?'内容已删除。':action==='withdraw'?'提交已撤回。':action==='appeal'?'申诉已提交，等待管理员复核。':'已重新加入审核队列。');
     } catch(e){setError(admin?(e as Error).message:userError(e));} finally{setBusy(false);}
   }
   return <article className="moderation-item">
@@ -106,7 +106,8 @@ function ModerationItem({item,admin,onChange}:{item:Item;admin:boolean;onChange:
     {admin&&item.reason&&<p className="moderation-reason">处理说明：{item.reason}</p>}
     {admin&&needsDecision&&moderationRiskNames(item.labels)&&<p className="moderation-reason">检测提示：{moderationRiskNames(item.labels)}</p>}
     {item.appealReason&&<p className="moderation-reason">申诉理由：{item.appealReason}</p>}
-    {item.status==='approved'&&item.targetType==='post'&&<Link className="text-button" href={`/posts/${item.targetId}`}>查看已发布动态</Link>}
+    {admin&&!terminal&&item.hiddenAt&&<p className="moderation-reason">此内容已被管理员隐藏。审核通过不会解除隐藏，请到全站内容管理恢复显示。</p>}
+    {item.status==='approved'&&!item.hiddenAt&&!item.unavailable&&item.targetType==='post'&&<Link className="text-button" href={`/posts/${item.targetId}`}>查看已发布动态</Link>}
     {item.status==='approved'&&profile&&item.authorId&&<Link className="text-button" href={`/profile/${item.authorId}`}>查看个人资料</Link>}
     {admin&&!!item.history?.length&&<details className="moderation-history" open={historyOpen} onToggle={event=>setHistoryOpen(event.currentTarget.open)}><summary>处理记录</summary>{item.history.map((entry:Item,index:number)=><p key={entry.id||index}><time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time> · {entry.reason||entry.action}</p>)}</details>}
     {admin&&item.status==='approved'&&<button type="button" className="text-button" aria-expanded={manageOpen} onClick={()=>setManageOpen(!manageOpen)}>{manageOpen?'收起管理操作':'管理已发布内容'}</button>}

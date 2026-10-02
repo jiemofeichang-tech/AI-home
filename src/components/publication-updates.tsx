@@ -7,8 +7,9 @@ import type { Item } from '@/shared/contracts';
 import styles from './publication-updates.module.css';
 
 const names:Record<string,string>={post:'动态',comment:'评论',draft:'资料或活动',media:'图片描述',link:'链接预览'};
-const statusNames:Record<string,string>={pending:'处理中',review:'待确认',rejected:'未通过'};
-const unresolved=new Set(['pending','review','rejected']);
+const statusNames:Record<string,string>={pending:'处理中',review:'待确认',rejected:'未通过',hidden:'已隐藏',unavailable:'暂不显示'};
+const unresolved=new Set(['pending','review','rejected','hidden','unavailable']);
+function publicationStatus(item:Item) { return item.status==='deleted'?'deleted':item.hiddenAt?'hidden':item.status==='approved'&&item.unavailable?'unavailable':item.status; }
 function publicationName(item:Item) { return item.draftKind==='profile'?'个人资料':names[item.targetType]||'内容'; }
 function publishedUrl(item:Item) {
   if(item.targetType==='post')return `/posts/${item.targetId}`;
@@ -44,18 +45,18 @@ export function PublicationUpdates({revision,submission,onPublished}:{revision:n
         const result=await response.json();
         if(!live||current.signal.aborted)return;
         const next:Item[]=result.items;
-        const approved=next.filter(item=>item.status==='approved'&&previous.current.has(item.id)&&previous.current.get(item.id)!=='approved');
-        for(const item of next)previous.current.set(item.id,item.status);
+        const approved=next.filter(item=>publicationStatus(item)==='approved'&&previous.current.has(item.id)&&previous.current.get(item.id)!=='approved');
         // Keep only the latest bounded response; no private drafts in local storage.
-        previous.current=new Map(next.map(item=>[item.id,item.status]));
+        previous.current=new Map(next.map(item=>[item.id,publicationStatus(item)]));
         setItems(next);setError(false);
+        setPublished(current=>current?next.find(item=>item.id===current.id&&publicationStatus(item)==='approved')||null:null);
         if(approved.length){
           const main=approved.find(item=>!['media','link'].includes(item.targetType));
           if(main)setPublished(main);
           onPublished();
         }
-        keepPolling=next.some(item=>unresolved.has(item.status));
-        if(next.some(item=>item.status==='pending'))delay=4000;
+        keepPolling=next.some(item=>unresolved.has(publicationStatus(item)));
+        if(next.some(item=>publicationStatus(item)==='pending'))delay=4000;
       } catch {
         if(live&&!current.signal.aborted)setError(true);
       } finally {
@@ -70,9 +71,9 @@ export function PublicationUpdates({revision,submission,onPublished}:{revision:n
     void load();document.addEventListener('visibilitychange',visibilityChanged);
     return()=>{live=false;if(timer)clearTimeout(timer);controller?.abort();document.removeEventListener('visibilitychange',visibilityChanged);};
   },[revision,submission,onPublished]);
-  const outstanding=items.filter(item=>unresolved.has(item.status)&&!['media','link'].includes(item.targetType));
-  const progress=outstanding.length===1?`${publicationName(outstanding[0])}${statusNames[outstanding[0].status]}`:Object.entries(statusNames).map(([status,label])=>{
-    const count=outstanding.filter(item=>item.status===status).length;
+  const outstanding=items.filter(item=>unresolved.has(publicationStatus(item))&&!['media','link'].includes(item.targetType));
+  const progress=outstanding.length===1?`${publicationName(outstanding[0])}${statusNames[publicationStatus(outstanding[0])]}`:Object.entries(statusNames).map(([status,label])=>{
+    const count=outstanding.filter(item=>publicationStatus(item)===status).length;
     return count?`${count} 项${label}`:'';
   }).filter(Boolean).join(' · ');
   if(!outstanding.length&&!published&&!error)return null;

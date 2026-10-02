@@ -7,6 +7,7 @@ import { getObject,deleteObject } from './storage';
 import { expireEventContactData } from './privacy';
 import { moderationRevisionForPost,moderationRevisionForDerivation,saveModeratedDerivation,discardUnavailableLinkPreview,processModeration } from './moderation';
 import { isLoginPageUrl } from '../shared/links';
+import { unavailablePostSQL } from './permissions';
 export const meili=searchClient;
 function strip(s:string){return s.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/\s+/g,' ').trim();}
 function meta(html:string,name:string){const tags=html.match(/<meta\b[^>]*>/gi)||[];for(const t of tags)if(new RegExp(`(?:property|name)=["']${name}["']`,'i').test(t))return strip(t.match(/content=["']([^"']*)/i)?.[1]||'');return '';}
@@ -54,10 +55,14 @@ async function processImage(id:string){
 export async function indexPost(id:string){
   const index=meili;if(!index)return;
   await transaction(async client=>{
-    // Hold the post while an external index task finishes. Closure cannot queue
-    // its removal before an older indexing task has finished writing content.
-    const [p]=await query('SELECT * FROM posts WHERE id=$1 FOR SHARE',[id],client);
-    if(!p||p.deleted_at||p.moderation_status!=='approved'){const task=await index.index('posts').deleteDocument(id);await index.tasks.waitForTask(task.taskUid);return;}
+    // Lock the whole ancestry in a stable order until the external write ends.
+    // Hiding an original must not finish before a stale quote is indexed.
+    const ancestors=await query(`SELECT p.* FROM posts p WHERE p.id IN (WITH RECURSIVE ancestors AS (
+      SELECT id,original_id,0 AS depth FROM posts WHERE id=$1 UNION ALL SELECT p.id,p.original_id,a.depth+1 FROM posts p JOIN ancestors a ON p.id=a.original_id WHERE a.depth<9
+    ) SELECT id FROM ancestors) ORDER BY p.id FOR SHARE`,[id],client);
+    const p=ancestors.find(row=>row.id===id);
+    const [visibility]=p?await query(`SELECT ${unavailablePostSQL('p')} AS unavailable FROM posts p WHERE p.id=$1`,[id],client):[];
+    if(!p||ancestors.some(row=>row.deleted_at||row.hidden_at||row.moderation_status!=='approved')||visibility?.unavailable){const task=await index.index('posts').deleteDocument(id);await index.tasks.waitForTask(task.taskUid);return;}
     const media=await query("SELECT extracted_text,description FROM media WHERE post_id=$1 AND moderation_status='approved' AND derivation_status='approved'",[id],client);const links=await query("SELECT title,description,content FROM link_resources WHERE post_id=$1 AND moderation_status='approved' AND derivation_status='approved'",[id],client);
     const task=await index.index('posts').addDocuments([{id,body:p.body,tags:p.tags,text:[...media.map(m=>`${m.extracted_text} ${m.description}`),...links.map(l=>`${l.title} ${l.description} ${l.content}`)].join('\n')}],{primaryKey:'id'});await index.tasks.waitForTask(task.taskUid);
   });
@@ -79,7 +84,7 @@ export async function processJob(id:string){
     await query(`UPDATE jobs SET status='done',error=NULL,locked_at=NULL WHERE id=$1 AND status='processing' AND locked_at::text=$2`,[id,job.claim]);
   }
   catch(e){
-    const deletedPost=job.kind==='index'&&(await query('SELECT 1 FROM posts WHERE id=$1 AND deleted_at IS NOT NULL',[job.target_id])).length>0;
+    const deletedPost=job.kind==='index'&&(await query(`SELECT 1 FROM posts p WHERE p.id=$1 AND ${unavailablePostSQL('p')}`,[job.target_id])).length>0;
     const deleting=job.kind==='delete-object'||deletedPost;
     // Provider failures can include paths; the deletion queue exposes only a
     // generic message and keeps the key solely in its private outbox row.

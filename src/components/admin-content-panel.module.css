@@ -1,0 +1,34 @@
+.panel { margin: 32px 0; padding-top: 26px; border-top: 1px solid var(--line); }
+.heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.heading h2 { margin: 0 0 8px; font-size: 22px; }
+.heading p { margin: 0 0 16px; font-size: 13px; line-height: 1.7; color: var(--muted); }
+.heading > button { flex-shrink: 0; }
+.filters { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.filters label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; min-width: 0; }
+.filters select { width: 100%; }
+.search { display: flex; gap: 8px; margin: 12px 0 18px; }
+.search input { width: 100%; min-width: 0; flex: 1; }
+.search button { flex-shrink: 0; padding: 9px 12px; }
+.item { padding: 16px; margin: 12px 0; border: 1px solid var(--line); border-radius: var(--radius); min-width: 0; }
+.meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; font-size: 12px; }
+.meta strong { overflow-wrap: anywhere; }
+.meta time { color: var(--muted); margin-left: auto; }
+.status { background: var(--subtle); border-radius: 999px; color: var(--text); padding: 2px 8px; }
+.scope { margin: 8px 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.body { margin: 14px 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; font-size: 14px; line-height: 1.75; }
+.images { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin: 8px 0; }
+.images img { width: 100%; height: 150px; object-fit: contain; border-radius: 8px; background: var(--subtle); }
+.reason { margin-top: 10px; }
+.reason summary { color: var(--muted); font-size: 12px; }
+.reason input { width: 100%; margin-top: 8px; font-size: 13px; }
+.actions, .quickActions { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; }
+.actions { margin-top: 12px; }
+.quickActions button { padding-top: 3px; padding-bottom: 3px; font-size: 12px; }
+.message { color: var(--success); font-size: 13px; line-height: 1.7; }
+.empty { padding: 24px 0; text-align: center; color: var(--muted); font-size: 13px; }
+.more { display: flex; margin: 18px auto 0; }
+@media (max-width: 400px) {
+  .item { padding: 12px; }
+  .meta time { flex-basis: 100%; margin-left: 0; }
+  .actions { gap: 8px 12px; }
+}

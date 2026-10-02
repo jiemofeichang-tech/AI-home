@@ -51,6 +51,8 @@ export const contracts = {
   reports_create: z.object({ id, reason:z.string().min(2).max(1000) }),
   admin_overview: z.object({}),
   admin_stats: z.object({}),
+  admin_content_list: z.object({targetType:z.enum(['post','comment']).default('post'),status:z.enum(['all','visible','hidden','deleted']).default('all'),q:z.string().trim().max(200).optional(),...page}),
+  admin_content_moderate: z.object({targetType:z.enum(['post','comment']),targetId:id,decision:z.enum(['hide','restore','delete']),reason:z.string().trim().max(1000).optional()}),
   moderation_list: z.object({mine:z.preprocess(value=>value==='true'?true:value==='false'?false:value,z.boolean().default(false)),status:z.enum(['pending','review','rejected','approved','deleted','actionable']).optional()}),
   moderation_decide: z.object({id,decision:z.enum(['approve','delete']),reason:z.string().trim().min(2,'请填写处理原因').max(1000)}),
   moderation_appeal: z.object({id,reason:z.string().trim().min(2,'请说明申诉理由').max(1000)}),
