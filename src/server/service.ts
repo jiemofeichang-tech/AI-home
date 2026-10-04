@@ -40,7 +40,7 @@ export async function postView(a:Actor,id:string,depth=0):Promise<Item> {
     query(`SELECT count(*)::int AS count FROM posts p WHERE p.original_id=$1 AND p.community_id IS NULL AND ${visiblePostSQL('p','$2','$3','$4')}`,[id,a.userId||'',a.communityIds||[],!!a.grantId])
   ]);
   const c=p.community_id?(await query('SELECT id,name,visibility FROM communities WHERE id=$1',[p.community_id]))[0]:null;
-  const processing=p.author_id===a.userId&&!a.grantId?await query(`SELECT id,kind,status FROM jobs WHERE target_id IN (SELECT id FROM media WHERE post_id=$1 UNION SELECT id FROM link_resources WHERE post_id=$1) AND status IN ('pending','processing','failed','blocked')`,[id]):[];
+  const processing=p.author_id===a.userId&&!a.grantId?await query(`SELECT id,kind,target_id,status,attempts FROM jobs WHERE target_id IN (SELECT id FROM media WHERE post_id=$1 UNION SELECT id FROM link_resources WHERE post_id=$1) AND status IN ('pending','processing','failed','blocked')`,[id]):[];
   return { ...p,author,community:c,media:media.map(m=>({...m,url:`/api/v1/media/${m.id}`})),links,comments,reactions,processing,repostCount:counts[0].count,original:p.original_id&&depth<8?await postView(a,p.original_id,depth+1):null };
 }
 async function safePosts(a:Actor,rows:Item[]) {

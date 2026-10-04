@@ -21,10 +21,11 @@ import { UploadedVideo } from './uploaded-video';
 import videoStyles from './uploaded-video.module.css';
 import { isVideoMime,MAX_VIDEO_BYTES } from '@/shared/video';
 import { PRIVACY_VERSION } from '@/shared/privacy';
+import { linkPreviewLabel,parsingJobLabel,shouldPollParsing,shouldClearPageOnError } from '@/shared/parsing-progress';
 
-async function api(path:string,method='GET',body?:unknown) {
-  const response=await fetch(`/api/v1/${path}`,{method,headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined});
-  const data=await response.json();if(!response.ok) throw new Error(data.error||'操作失败');return data;
+async function api(path:string,method='GET',body?:unknown,signal?:AbortSignal) {
+  const response=await fetch(`/api/v1/${path}`,{method,headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined,signal,...(signal?{cache:'no-store' as const}:{})});
+  const data=await response.json();if(!response.ok) throw Object.assign(new Error(data.error||'操作失败'),{status:response.status});return data;
 }
 const act=(action:Action,input:unknown={})=>api(`actions/${action}`,'POST',input);
 const date=(s:string)=>new Date(s).toLocaleString('zh-CN',{month:'long',day:'numeric',hour:'2-digit',minute:'2-digit'});
@@ -40,7 +41,10 @@ export default function CommunityApp(){
   const path=usePathname();const router=useRouter();const [me,setMe]=useState<Item|null>(null),[dev,setDev]=useState(false),[inviteOnly,setInviteOnly]=useState(true),[storedData,setData]=useState<Item>({}),[communities,setCommunities]=useState<Item[]>([]),[events,setEvents]=useState<Item[]>([]),[loading,setLoading]=useState(true),[error,setError]=useState(''),[toast,setToast]=useState(''),[revision,setRevision]=useState(0),[feed,setFeed]=useState('latest'),[modal,setModal]=useState(''),[original,setOriginal]=useState<Item|null>(null),[busy,setBusy]=useState(false),[term,setTerm]=useState(''),[searchType,setSearchType]=useState('all'),[city,setCity]=useState(''),[token,setToken]=useState('');
   const segments=path.split('/').filter(Boolean);const section=segments[0]||'home',id=segments[1];
   const [lastPublication,setLastPublication]=useState<Item|null>(null);
-  const loadedPage=useRef(''),loadSequence=useRef(0);
+  const [pollRevision,setPollRevision]=useState(0),[pageRefreshing,setPageRefreshing]=useState(false),[loadingMore,setLoadingMore]=useState(false);
+  const loadedPage=useRef(''),loadSequence=useRef(0),lastLoadKey=useRef('');
+  const pageRequest=useRef<{controller:AbortController;kind:'page'|'more'}|null>(null);
+  const parsingCycle=useRef({key:'',active:false,wake:false});
   const pageKey=JSON.stringify([path,me?.id,feed,term,searchType,city]);
   const data=loadedPage.current===pageKey?storedData:{};
   useEffect(()=>{setModal('');setOriginal(null);setToken('');setLastPublication(null);},[me?.id]);
@@ -50,41 +54,75 @@ export default function CommunityApp(){
   useEffect(()=>{let valid=true;api('me').then(r=>{if(valid){setMe(r.user);setDev(r.dev);setInviteOnly(r.inviteOnly!==false);}}).catch(()=>{});return()=>{valid=false;};},[revision,path]);
   useEffect(()=>{let valid=true;Promise.all([api('communities'),api('events')]).then(([c,e])=>{if(valid){setCommunities(c.items);setEvents(e.items);}}).catch(()=>{});return()=>{valid=false;};},[revision,path]);
   useEffect(()=>{
+    pageRequest.current?.controller.abort();
+    const controller=new AbortController();pageRequest.current={controller,kind:'page'};
     let valid=true;const sequence=++loadSequence.current;const samePage=loadedPage.current===pageKey;
+    const loadKey=JSON.stringify([pageKey,revision]),automatic=lastLoadKey.current===loadKey;lastLoadKey.current=loadKey;
+    const read=(endpoint:string)=>api(endpoint,'GET',undefined,controller.signal);
+    setPageRefreshing(true);setLoadingMore(false);
     async function pages(endpoint:string,key='items'){
       const previous=samePage?(data[key]||[]):[];const tail=previous.at(-1)?.id;
-      let result=await api(endpoint),items=result[key]||[],count=1;
+      let result=await read(endpoint),items=result[key]||[],count=1;
       const maxPages=Math.ceil(previous.length/20)+1;
-      while(valid&&result.nextCursor&&tail&&!items.some((item:Item)=>item.id===tail)&&count<maxPages){
-        result=await api(`${endpoint}&cursor=${encodeURIComponent(result.nextCursor)}`);items=[...items,...(result[key]||[])];count++;
+      while(valid&&!controller.signal.aborted&&result.nextCursor&&tail&&!items.some((item:Item)=>item.id===tail)&&count<maxPages){
+        result=await read(`${endpoint}&cursor=${encodeURIComponent(result.nextCursor)}`);items=[...items,...(result[key]||[])];count++;
       }
       return {...result,[key]:items};
     }
     if(loadedPage.current!==pageKey){setLoading(true);setData({});}setError('');
     async function load(){
       if(section==='login'||section==='consent') return {};
-      if(section==='privacy')return api('privacy/policy');
+      if(section==='privacy')return read('privacy/policy');
       if(section==='privacy-settings'||section==='moderation')return {};
       if(section==='home') return pages(`posts?feed=${feed}`);
-      if(section==='posts') return {post:await api(`posts/${id}`)};
-      if(section==='communities') {if(!id) return api('communities');const c=await api(`communities/${id}`);let posts={items:[]};try {posts=await api(`posts?communityId=${id}`);}catch{}let members={items:[]};if(c.membership_status==='active')try{members=await api(`communities/${id}/members`);}catch{}return {community:c,posts:posts.items,members:members.items};}
-      if(section==='events') {if(!id)return api('events');const e=await api(`events/${id}`);let attendees={items:[]};if(e.canManage)try{attendees=await api(`events/${id}/attendees`);}catch{}return {event:e,attendees:attendees.items};}
+      if(section==='posts') return {post:await read(`posts/${id}`)};
+      if(section==='communities') {if(!id) return read('communities');const c=await read(`communities/${id}`);let posts={items:[]};try {posts=await read(`posts?communityId=${id}`);}catch(error){if(automatic||controller.signal.aborted)throw error;}let members={items:[]};if(c.membership_status==='active')try{members=await read(`communities/${id}/members`);}catch(error){if(controller.signal.aborted)throw error;}return {community:c,posts:posts.items,members:members.items};}
+      if(section==='events') {if(!id)return read('events');const e=await read(`events/${id}`);let attendees={items:[]};if(e.canManage)try{attendees=await read(`events/${id}/attendees`);}catch(error){if(controller.signal.aborted)throw error;}return {event:e,attendees:attendees.items};}
       if(section==='profile') {
         if(!id) {
-          const {user}=await api('me');
-          if(valid)router.replace(user?`/profile/${encodeURIComponent(user.id)}`:'/login');
+          const {user}=await read('me');
+          if(valid&&!controller.signal.aborted)router.replace(user?`/profile/${encodeURIComponent(user.id)}`:'/login');
           return {};
         }
-        return {profile:await api(`profiles/${id}`),posts:(await api(`posts?authorId=${id}`)).items};
+        return {profile:await read(`profiles/${id}`),posts:(await read(`posts?authorId=${id}`)).items};
       }
-      if(section==='agents')return api('grants');if(section==='notifications')return api('notifications');if(section==='admin')return api('admin');
+      if(section==='agents')return read('grants');if(section==='notifications')return read('notifications');if(section==='admin')return read('admin');
       if(section==='discover')return term?pages(`search?q=${encodeURIComponent(term)}&type=${searchType}&city=${encodeURIComponent(city)}`,'posts'):{posts:[],communities:[],events:[]};
       return {};
     }
-    load().then(r=>{if(valid&&sequence===loadSequence.current){loadedPage.current=pageKey;setData(r);}}).catch(e=>{if(valid&&sequence===loadSequence.current){if(samePage)setToast('暂时无法刷新，已保留当前页面。');else setError(e.message);}}).finally(()=>{if(valid&&sequence===loadSequence.current)setLoading(false);});
-    return()=>{valid=false;};
-  },[path,me?.id,revision,feed,term,searchType,city]);
-  async function loadMore(){const sequence=++loadSequence.current;setBusy(true);try{const endpoint=section==='discover'?`search?q=${encodeURIComponent(term)}&type=${searchType}&city=${encodeURIComponent(city)}`:`posts?feed=${feed}`;const result=await api(`${endpoint}&cursor=${encodeURIComponent(data.nextCursor)}`);const key=section==='discover'?'posts':'items';if(sequence!==loadSequence.current)return;setData(old=>({...old,...result,[key]:[...(old[key]||[]),...(result[key]||[])]}));}catch(e){setToast((e as Error).message);}finally{setBusy(false);}}
+    load().then(r=>{if(valid&&!controller.signal.aborted&&sequence===loadSequence.current){loadedPage.current=pageKey;setData(r);}}).catch(e=>{if(valid&&!controller.signal.aborted&&sequence===loadSequence.current){if(shouldClearPageOnError(e.status)){loadedPage.current='';setData({});setError(e.message);}else if(samePage){if(!automatic)setToast('暂时无法刷新，已保留当前页面。');}else setError(e.message);}}).finally(()=>{if(pageRequest.current?.controller===controller)pageRequest.current=null;if(valid&&sequence===loadSequence.current){setLoading(false);setPageRefreshing(false);}});
+    return()=>{valid=false;pageRequest.current?.controller.abort();pageRequest.current=null;loadSequence.current++;};
+  },[path,me?.id,revision,pollRevision,feed,term,searchType,city]);
+  useEffect(()=>{
+    let live=true,timer:ReturnType<typeof setTimeout>|undefined;
+    const hasWork=()=>shouldPollParsing({page:data,userId:me?.id,visible:true,inFlight:false});
+    const ready=()=>shouldPollParsing({page:data,userId:me?.id,visible:!document.hidden,inFlight:pageRefreshing||loadingMore||busy||!!pageRequest.current});
+    const previous=parsingCycle.current,active=hasWork();
+    parsingCycle.current={key:pageKey,active,wake:loadedPage.current===pageKey&&previous.key===pageKey&&(previous.wake||(previous.active&&!active))};
+    // Parsing may enqueue a new moderation case after publication polling stopped.
+    // Wake it once on completion; keep that wake pending while this page is hidden.
+    function wakePublication(){
+      if(!live||document.hidden||pageRefreshing||loadingMore||busy||pageRequest.current||!parsingCycle.current.wake||parsingCycle.current.key!==pageKey||loadedPage.current!==pageKey)return false;
+      parsingCycle.current.wake=false;refresh();return true;
+    }
+    function refreshParsing(){if(live&&ready())setPollRevision(value=>value+1);}
+    function visibilityChanged(){
+      if(timer)clearTimeout(timer);
+      if(document.hidden){if(hasWork()&&pageRequest.current?.kind==='page')pageRequest.current.controller.abort();}
+      else if(!wakePublication())refreshParsing();
+    }
+    if(!wakePublication()&&ready())timer=setTimeout(refreshParsing,5000);
+    document.addEventListener('visibilitychange',visibilityChanged);
+    return()=>{live=false;if(timer)clearTimeout(timer);document.removeEventListener('visibilitychange',visibilityChanged);};
+  },[data,pageKey,me?.id,pageRefreshing,loadingMore,busy,refresh]);
+  async function loadMore(){
+    if(pageRequest.current||busy||loadingMore||!data.nextCursor)return;
+    const controller=new AbortController();pageRequest.current={controller,kind:'more'};
+    const sequence=++loadSequence.current;setLoadingMore(true);
+    try{const endpoint=section==='discover'?`search?q=${encodeURIComponent(term)}&type=${searchType}&city=${encodeURIComponent(city)}`:`posts?feed=${feed}`;const result=await api(`${endpoint}&cursor=${encodeURIComponent(data.nextCursor)}`,'GET',undefined,controller.signal);const key=section==='discover'?'posts':'items';if(controller.signal.aborted||sequence!==loadSequence.current)return;setData(old=>({...old,...result,[key]:[...(old[key]||[]),...(result[key]||[])]}));}
+    catch(e){if(!controller.signal.aborted&&sequence===loadSequence.current)setToast((e as Error).message);}
+    finally{if(pageRequest.current?.controller===controller)pageRequest.current=null;if(sequence===loadSequence.current)setLoadingMore(false);}
+  }
   const logout=async()=>{await fetch('/api/auth/sign-out',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});setMe(null);refresh();router.push('/');};
   const createPost=(post?:Item)=>{if(needLogin()){setOriginal(post||null);setModal('post');}};
   const nav=[{path:'/',label:'社区动态',icon:Home,key:'home'},{path:'/discover',label:'发现',icon:Compass,key:'discover'},{path:'/communities',label:'同城社群',icon:Users,key:'communities'},{path:'/events',label:'线下活动',icon:CalendarDays,key:'events'},{path:'/agents',label:'我的 Agent',icon:Bot,key:'agents'},{path:'/notifications',label:'消息',icon:Bell,key:'notifications'},{path:'/moderation',label:'我的发布',icon:ShieldCheck,key:'moderation'}];
@@ -106,9 +144,9 @@ export default function CommunityApp(){
     {dev&&section==='admin'&&me?.role==='admin'&&<div className="dev-banner">本地体验环境 · 示例内容已标记，短信与 AI 凭据尚未配置时不调用真实服务。</div>}
     {me&&!['login','consent','admin','moderation','privacy','privacy-settings'].includes(section)&&<PublicationUpdates key={me.id} revision={revision} submission={lastPublication?.authorId===me.id?lastPublication?.id||'':''} onPublished={refresh}/>}
     {error?<div className="error-banner"><p>{error}</p>{!me?<Link href="/login">前往登录</Link>:<button onClick={refresh}>重试</button>}</div>:loading&&section!=='discover'?<div className="loading"><span className="spinner"/>正在加载…</div>:<>
-      {section==='home'&&<><div className="feed-tabs">{[['latest','最新动态'],['following','正在关注'],['bookmarks','我的收藏']].map(([k,t])=><button key={k} className={feed===k?'selected':''} onClick={()=>{if(k==='latest'||needLogin())setFeed(k);}}>{t}</button>)}</div><div className="composer-preview"><Avatar image={me?.image} name={me?.name||'我'}/><button onClick={()=>createPost()}>有什么新的发现？和大家聊聊。</button><button aria-label="分享图片" className="icon-btn" onClick={()=>createPost()}><ImagePlus size={20}/></button></div>{data.items?.length?data.items.map((p:Item)=><PostCard ctx={context} key={p.id} post={p}/>):<Empty/>}{data.nextCursor&&<button className="secondary load-more" disabled={busy} onClick={loadMore}>加载更多</button>}</>}
+      {section==='home'&&<><div className="feed-tabs">{[['latest','最新动态'],['following','正在关注'],['bookmarks','我的收藏']].map(([k,t])=><button key={k} className={feed===k?'selected':''} onClick={()=>{if(k==='latest'||needLogin())setFeed(k);}}>{t}</button>)}</div><div className="composer-preview"><Avatar image={me?.image} name={me?.name||'我'}/><button onClick={()=>createPost()}>有什么新的发现？和大家聊聊。</button><button aria-label="分享图片" className="icon-btn" onClick={()=>createPost()}><ImagePlus size={20}/></button></div>{data.items?.length?data.items.map((p:Item)=><PostCard ctx={context} key={p.id} post={p}/>):<Empty/>}{data.nextCursor&&<button className="secondary load-more" disabled={busy||pageRefreshing||loadingMore} onClick={loadMore}>加载更多</button>}</>}
       {section==='posts'&&data.post&&<PostCard ctx={context} post={data.post} detail/>}
-      {section==='discover'&&<div className="page-content"><div className="section-intro"><span className="eyebrow">DISCOVER</span><h2>好项目，值得被发现。</h2><p>搜索实践经验、开源工具，还有一起动手的人。</p></div><div className="search-box large"><Search size={21}/><input aria-label="搜索社区" value={term} onChange={e=>setTerm(e.target.value)} placeholder="搜索帖子、GitHub 项目、社群、活动"/></div><div className="filter-row"><select aria-label="内容类型" value={searchType} onChange={e=>setSearchType(e.target.value)}><option value="all">全部内容</option><option value="posts">帖子</option><option value="github">GitHub 项目</option><option value="communities">社群</option><option value="events">活动</option></select><input aria-label="城市筛选" placeholder="全部城市" value={city} onChange={e=>setCity(e.target.value)}/></div>{!term?<div className="topic-cloud">{['Agent','开源','工作流','AI 编程','杭州','创作'].map(t=><button key={t} onClick={()=>setTerm(t)}>#{t}<ArrowUpRight size={16}/></button>)}</div>:<>{data.posts?.map((p:Item)=><PostCard ctx={context} key={p.id} post={p}/>)}{data.nextCursor&&<button className="secondary load-more" disabled={busy} onClick={loadMore}>加载更多</button>}{!!data.communities?.length&&communityCards(data.communities)}{!!data.events?.length&&eventCards(data.events)}{!data.posts?.length&&!data.communities?.length&&!data.events?.length&&<Empty title="没有找到相关内容" detail="试试其他关键词，或去发布一个问题。"/>}</>}</div>}
+      {section==='discover'&&<div className="page-content"><div className="section-intro"><span className="eyebrow">DISCOVER</span><h2>好项目，值得被发现。</h2><p>搜索实践经验、开源工具，还有一起动手的人。</p></div><div className="search-box large"><Search size={21}/><input aria-label="搜索社区" value={term} onChange={e=>setTerm(e.target.value)} placeholder="搜索帖子、GitHub 项目、社群、活动"/></div><div className="filter-row"><select aria-label="内容类型" value={searchType} onChange={e=>setSearchType(e.target.value)}><option value="all">全部内容</option><option value="posts">帖子</option><option value="github">GitHub 项目</option><option value="communities">社群</option><option value="events">活动</option></select><input aria-label="城市筛选" placeholder="全部城市" value={city} onChange={e=>setCity(e.target.value)}/></div>{!term?<div className="topic-cloud">{['Agent','开源','工作流','AI 编程','杭州','创作'].map(t=><button key={t} onClick={()=>setTerm(t)}>#{t}<ArrowUpRight size={16}/></button>)}</div>:<>{data.posts?.map((p:Item)=><PostCard ctx={context} key={p.id} post={p}/>)}{data.nextCursor&&<button className="secondary load-more" disabled={busy||pageRefreshing||loadingMore} onClick={loadMore}>加载更多</button>}{!!data.communities?.length&&communityCards(data.communities)}{!!data.events?.length&&eventCards(data.events)}{!data.posts?.length&&!data.communities?.length&&!data.events?.length&&<Empty title="没有找到相关内容" detail="试试其他关键词，或去发布一个问题。"/>}</>}</div>}
       {section==='communities'&&!id&&<div className="page-content"><div className="section-intro"><span className="eyebrow">FIND YOUR PEOPLE</span><h2>线上聊得来，线下见一面。</h2><p>找到你的城市，和同路人一起创造。</p><button className="secondary" onClick={()=>{if(needLogin())setModal('community');}}><Plus size={17}/>创建社群</button></div>{communityCards(data.items||[])}</div>}
       {section==='communities'&&id&&data.community&&<><div className="community-cover"><div className="community-cover-pattern"/><span className="cover-label">{data.community.city} / AI COMMUNITY</span><Users size={48}/></div><div className="detail-head"><span className="pill">{data.community.visibility==='private'?<Lock size={13}/>:<Globe size={13}/>} {data.community.visibility==='private'?'私密社群':'公开社群'}</span><h2>{data.community.name}</h2><p>{data.community.description}</p><div className="detail-meta"><span><MapPin size={15}/>{data.community.city}</span><span><Users size={15}/>{data.community.member_count} 位成员</span></div><div className="detail-actions">{data.community.membership_status==='active'?<><button className="primary" onClick={()=>createPost()}><Plus size={17}/>发布社群动态</button>{data.community.owner_id!==me?.id&&<button className="text-button" onClick={()=>run(()=>act('communities_leave',{id}),'已退出社群')}>退出社群</button>}</>:<button className="primary" disabled={busy||data.community.membership_status==='pending'} onClick={()=>{if(needLogin())run(()=>act('communities_join',{id}),'加入请求已处理');}}>{data.community.membership_status==='pending'?'等待管理员批准':data.community.visibility==='private'?'申请加入':'加入社群'}</button>}{data.community.membership_role==='admin'&&<><button className="secondary" onClick={()=>setModal('event')}>发起活动</button><button className="text-button" onClick={()=>{const announcement=prompt('编辑社群公告',data.community.announcement);if(announcement!==null)run(()=>act('communities_announcement',{id,announcement}),'公告已提交审核，通过前展示原公告');}}>编辑公告</button></>}</div>{data.community.announcement&&<div className="announcement"><Bell size={16}/><p>{data.community.announcement}</p></div>}{data.community.membership_role==='admin'&&data.members?.some((m:Item)=>m.status==='pending')&&<div className="requests"><h3>加入申请</h3>{data.members.filter((m:Item)=>m.status==='pending').map((m:Item)=><div className="member-row" key={m.id}><Avatar image={m.image} name={m.name} size="small"/><span>{m.name}</span><button onClick={()=>run(()=>act('communities_approve',{id,userId:m.id,approved:true}),'已批准')}>批准</button><button onClick={()=>run(()=>act('communities_approve',{id,userId:m.id,approved:false}),'已拒绝')}>拒绝</button></div>)}</div>}</div>{data.community.membership_role==='admin'&&<details className="detail-head"><summary>社群成员管理</summary>{data.members?.filter((m:Item)=>m.status==='active').map((m:Item)=><div className="member-row" key={m.id}><Avatar image={m.image} name={m.name} size="small"/><span>{m.name}</span>{m.id===data.community.owner_id?<span className="muted">创建者</span>:<button disabled={busy} onClick={()=>{if(confirm('将这位成员移出社群？'))run(()=>act('communities_remove',{id,userId:m.id}),'成员已移出社群');}}>移出社群</button>}</div>)}</details>}<div className="feed-label"><span>社群讨论</span></div>{data.posts?.length?data.posts.map((p:Item)=><PostCard ctx={context} key={p.id} post={p}/>):<Empty title={data.community.visibility==='private'&&data.community.membership_status!=='active'?'加入后查看社群内容':'开启第一场讨论'}/>}</>}
       {section==='events'&&!id&&<div className="page-content"><div className="section-intro"><span className="eyebrow">MEET IN REAL LIFE</span><h2>把“有空聊聊”，变成一次见面。</h2><p>工作坊、小聚、一起做项目。找到下一场想参加的活动。</p><button className="secondary" onClick={()=>{if(needLogin())setModal('event');}}><Plus size={17}/>发起活动</button></div>{eventCards(data.items||[])}</div>}
@@ -154,10 +192,10 @@ function PostCard({post,detail=false,ctx}:{post:Item;detail?:boolean;ctx:Item & 
       {post.tags?.length>0&&<div className="tags">{post.tags.map((tag:string)=><button key={tag} onClick={()=>{setTerm(tag);router.push('/discover');}}>#{tag}</button>)}</div>}
       {!!post.media?.length&&<div className={`media-grid count-${post.media.length}`}>{post.media.map((m:Item)=>isVideoMime(m.mime)?<UploadedVideo key={m.id} src={m.url} mime={m.mime}/>:<a key={m.id} href={m.url} target="_blank" rel="noreferrer"><img src={m.url} alt={m.description||'帖子图片'}/></a>)}</div>}
       {post.links?.map((l:Item)=>{
-        const card=<a className={`link-card ${l.platform==='github'?'github-card':''}`} key={l.id} href={l.url} target="_blank" rel="noreferrer"><div className="link-icon">{l.platform==='github'?<Code2 size={24}/>:<Link2 size={22}/>}</div><div><span className="link-source">{l.platform==='github'?'GITHUB · 开源项目':l.platform==='xiaohongshu'?'小红书':l.platform==='douyin'?'抖音':new URL(l.url).hostname}</span><strong>{l.title||l.url.replace(/^https?:\/\//,'')}</strong>{l.description&&<p>{l.description}</p>}<span className="link-meta">{l.metadata?.language&&`${l.metadata.language} · `}{l.metadata?.stars!==undefined&&`★ ${l.metadata.stars} · `}{l.status==='pending'?'正在获取链接信息':l.status==='failed'?'暂未获取详情，可打开原链接':l.status==='partial'?'已保存链接预览':'查看来源'}{l.fetched_at&&` · ${ago(l.fetched_at)}更新`}</span></div><ArrowUpRight size={17}/></a>;
+        const card=<a className={`link-card ${l.platform==='github'?'github-card':''}`} key={l.id} href={l.url} target="_blank" rel="noreferrer"><div className="link-icon">{l.platform==='github'?<Code2 size={24}/>:<Link2 size={22}/>}</div><div><span className="link-source">{l.platform==='github'?'GITHUB · 开源项目':l.platform==='xiaohongshu'?'小红书':l.platform==='douyin'?'抖音':new URL(l.url).hostname}</span><strong>{l.title||l.url.replace(/^https?:\/\//,'')}</strong>{l.description&&<p>{l.description}</p>}<span className="link-meta">{l.metadata?.language&&`${l.metadata.language} · `}{l.metadata?.stars!==undefined&&`★ ${l.metadata.stars} · `}{linkPreviewLabel(l,post.processing)}{l.fetched_at&&` · ${ago(l.fetched_at)}更新`}</span></div><ArrowUpRight size={17}/></a>;
         return l.platform==='douyin'?<DouyinEmbed key={l.id} metadata={l.metadata} url={l.url} title={l.title} description={l.description}>{card}</DouyinEmbed>:card;
       })}
-      {!!post.processing?.length&&<div className="processing-status">{post.processing.map((job:Item)=><div key={job.id}><span>{job.kind==='image'?'图片理解':'链接解析'}：{job.status==='pending'?'排队中':job.status==='processing'?'处理中':'暂时未完成'}</span>{['failed','blocked'].includes(job.status)&&<button className="text-button" disabled={busy} onClick={()=>run(()=>act('jobs_retry',{id:job.id}),'已安排重试')}>重试</button>}</div>)}</div>}
+      {!!post.processing?.length&&<div className="processing-status">{post.processing.map((job:Item)=><div key={job.id}><span>{job.kind==='image'?'图片理解':'链接解析'}：{parsingJobLabel(job)}</span>{['failed','blocked'].includes(job.status)&&<button className="text-button" disabled={busy} onClick={()=>run(()=>act('jobs_retry',{id:job.id}),'已安排重试')}>重试</button>}</div>)}</div>}
       {post.original&&<Link href={`/posts/${post.original.id}`} className="quote"><strong>{post.original.author?.name}</strong><p>{post.original.body}</p></Link>}
       <div className="post-actions"><button className={reaction('like').mine?'liked':''} aria-label="点赞" onClick={()=>{if(needLogin())run(()=>act('reactions_set',{id:post.id,kind:'like',active:!reaction('like').mine}),'已更新点赞');}}><Heart size={18}/><span>{reaction('like').count||'喜欢'}</span></button><button aria-label="评论" onClick={()=>setShowReply(!showReply)}><MessageCircle size={18}/><span>{post.comments?.length||'评论'}</span></button><button aria-label="引用转发" onClick={()=>createPost(post)}><Repeat2 size={18}/><span>{post.repostCount||'转发'}</span></button><button aria-label="收藏" className={reaction('bookmark').mine?'saved':''} onClick={()=>{if(needLogin())run(()=>act('reactions_set',{id:post.id,kind:'bookmark',active:!reaction('bookmark').mine}),'收藏已更新');}}><Bookmark size={18}/></button></div>
       {showReply&&<div className="replies">{post.comments?.map((c:Item)=><div className="reply" key={c.id}><Avatar image={c.image} name={c.name} size="small"/><div><strong>{c.name}</strong>{c.agent_name&&<span className="muted"> · Agent 代发</span>}<p>{c.body}</p>{me?.role==='admin'&&<div className={adminContentStyles.quickActions} role="group" aria-label="管理员评论操作"><button type="button" className="text-button" disabled={busy} onClick={()=>void moderateContent('comment',c.id,'hide')}>隐藏评论</button><button type="button" className="text-button danger" disabled={busy} onClick={()=>void moderateContent('comment',c.id,'delete')}>删除评论</button></div>}</div></div>)}<form className="reply-form" onSubmit={e=>{e.preventDefault();if(needLogin()&&reply.trim())run(async()=>{const result=await act('comments_create',{id:post.id,body:reply,idempotencyKey:crypto.randomUUID()});setReply('');return result;},'评论已发送，安全检查通过后自动展示。');}}><input aria-label="评论内容" placeholder="说说你的想法…" value={reply} onChange={e=>setReply(e.target.value)} maxLength={10000}/><button className="icon-btn" aria-label="发送评论" disabled={busy}><Send size={18}/></button></form></div>}

@@ -93,3 +93,25 @@ test('hidden and deleted posts cannot expose an approved player through detail o
   await assert.rejects(execute('posts_get',{id:post.id},{}));
   let fetched=false;await processLink(post.linkId,async url=>{fetched=true;return fetchVideo(url);});assert.equal(fetched,false);
 });
+
+test('authors can distinguish retry progress without exposing private job details to other readers',async()=>{
+  const post=await fixture();
+  const [job]=await query("UPDATE jobs SET status='pending',attempts=1,error='private provider diagnostic',available_at=now()+interval '30 seconds' WHERE kind='link' AND target_id=$1 RETURNING id",[post.linkId]);
+  await query("UPDATE link_resources SET status='failed' WHERE id=$1",[post.linkId]);
+  const view=await execute('posts_get',{id:post.id},author);
+  assert.deepEqual(view.processing,[{id:job.id,kind:'link',target_id:post.linkId,status:'pending',attempts:1}]);
+  assert.equal(JSON.stringify(view).includes('private provider diagnostic'),false);
+  const grant=await execute('grants_create',{name:'Read public posts',scopes:['content:read'],days:1},author);
+  for(const actor of [{},admin,{...author,grantId:grant.id}]) {
+    const otherView=await execute('posts_get',{id:post.id},actor);
+    assert.deepEqual(otherView.processing,[]);
+    assert.equal(JSON.stringify(otherView).includes('private provider diagnostic'),false);
+  }
+  await query("UPDATE jobs SET status='failed',attempts=3 WHERE id=$1",[job.id]);
+  assert.equal((await execute('posts_get',{id:post.id},author)).processing[0].status,'failed');
+  await execute('jobs_retry',{id:job.id},author);
+  const retried=(await execute('posts_get',{id:post.id},author)).processing[0];
+  assert.equal(retried.status,'pending');assert.equal(retried.attempts,0);
+  await query("UPDATE jobs SET status='done' WHERE id=$1",[job.id]);
+  assert.deepEqual((await execute('posts_get',{id:post.id},author)).processing,[]);
+});
