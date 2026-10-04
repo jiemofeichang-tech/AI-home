@@ -136,7 +136,12 @@ test('private attachments, OCR and reposts obey live permissions after deletion'
   const {putObject}=await import('../src/server/storage');const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+afo0AAAAASUVORK5CYII=','base64');
   await putObject('images/test.png',png,'image/png');await query(`INSERT INTO media(id,owner_id,storage_key,mime,bytes,original_name,extracted_text,status) VALUES('test-image',$1,'images/test.png','image/png',$2,'test.png','OCR-SECRET','ready')`,[owner.userId,png.length]);
   await assert.rejects(execute('posts_create',{body:'steal image',mediaIds:['test-image']},outsider),/不属于你/);
-  const post=(await execute('posts_create',{body:'private image',mediaIds:['test-image'],communityId:privateGroup},owner)).id;
+  const submitted=await (await import('../src/server/service')).execute('posts_create',{body:'private image',mediaIds:['test-image'],imageAnalysisConsent:true,communityId:privateGroup},owner);
+  const post=submitted.id;
+  const {enqueueModeration,moderationDecide}=await import('../src/server/moderation');
+  const derived=await enqueueModeration('media','test-image',owner.userId!);
+  await moderationDecide(owner,{id:derived.id,decision:'approve',reason:'测试夹具独立图片识别结果审核通过'});
+  await approveFixture(submitted);
   const unauth=await http(new Request(`${base}/api/v1/media/test-image`));assert.equal(unauth.status,403);
   const allowed=await http(new Request(`${base}/api/v1/media/test-image`,{headers:{Authorization:`Bearer ${grant.token}`}}));assert.equal(allowed.status,200);assert.equal(allowed.headers.get('cache-control'),'private, no-store');
   assert.equal((await execute('search',{q:'OCR-SECRET'},{})).posts.length,0);assert.equal((await execute('search',{q:'OCR-SECRET'},agent)).posts[0].id,post);
@@ -188,7 +193,13 @@ test('link worker refuses private GitHub data and recovers after a retry',async(
     await assert.rejects(execute('posts_get',{id:post.id},owner));assert.equal(JSON.stringify(await execute('posts_list',{},{})).includes('PRIVATE-REPOSITORY-SECRET'),false);
     await query("UPDATE jobs SET status='failed' WHERE id=$1",[job.id]);await execute('jobs_retry',{id:job.id},owner);
     globalThis.fetch=async input=>String(input).endsWith('/readme')?new Response('PUBLIC-README fixture'):Response.json({private:false,visibility:'public',full_name:'test-owner/public-fixture',description:'Public description',language:'TypeScript'});
-    await processJob(job.id);await approveFixture(post);const success=await execute('posts_get',{id:post.id},owner);assert.equal(success.links[0].content,'PUBLIC-README fixture');assert.equal(success.links[0].status,'ready');
+    await processJob(job.id);
+    assert.equal((await query('SELECT derivation_status FROM link_resources WHERE id=$1',[link.id]))[0].derivation_status,'pending');
+    await assert.rejects(execute('posts_get',{id:post.id},owner));
+    const [derived]=await query("SELECT id FROM moderation_cases WHERE target_type='link' AND target_id=$1",[link.id]);
+    await (await import('../src/server/moderation')).moderationDecide(owner,{id:derived.id,decision:'approve',reason:'测试夹具独立链接预览审核通过'});
+    await approveFixture(post);
+    const success=await execute('posts_get',{id:post.id},owner);assert.equal(success.links[0].content,'PUBLIC-README fixture');assert.equal(success.links[0].status,'ready');
   }finally{globalThis.fetch=originalFetch;}
 });
 test('HTTP API and remote MCP use the same data; scoped token revocation takes effect',async()=>{

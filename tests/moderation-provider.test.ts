@@ -89,9 +89,11 @@ test('only explicit no-risk labels pass; politics and ambiguous violence remain 
     [{RiskLevel:'high',Result:[{Label:'political_figure',Confidence:99},{Label:'pornographic_adult',Confidence:20}]},'review'],
     [{RiskLevel:'high',Result:[{Label:'political_figure',Confidence:99},{Label:'pornographic_adult',Confidence:99,RiskLevel:'high'}]},'rejected'],
   ];
-  for(const [data,decision] of cases) {
+  for(const [index,[data,decision]] of cases.entries()) {
     globalThis.fetch=async()=>answer(data);
-    assert.equal((await moderateContent(input())).decision,decision,JSON.stringify(data));
+    // Each provider response describes different content; an earlier approval
+    // of identical bytes intentionally uses the application's approval cache.
+    assert.equal((await moderateContent(input(`风险映射用例 ${index}`))).decision,decision,JSON.stringify(data));
   }
 });
 
@@ -106,9 +108,9 @@ test('empty, malformed, stale, errored and timed-out cloud responses fail closed
     ()=>new Response('PRIVATE-HTML-error',{status:503}),()=>new Response('broken JSON'),
     ()=>{throw new DOMException('private-timeout-request-body','TimeoutError');},
   ];
-  for(const response of responses) {
+  for(const [index,response] of responses.entries()) {
     globalThis.fetch=async()=>response();
-    await assert.rejects(moderateContent(input()),(error:Error)=>{
+    await assert.rejects(moderateContent(input(`异常响应用例 ${index}`)),(error:Error)=>{
       assert.equal(error.message,'内容审核服务暂不可用，请等待人工审核');assert.equal('cause' in error,false);return true;
     });
   }
@@ -134,12 +136,12 @@ test('long Unicode text is scanned completely with overlap; a risky tail cannot 
 const tokenData=()=>({AccessKeyId:'STS.test-key',AccessKeySecret:'temporary-secret',SecurityToken:'temporary-sts-token',BucketName:'oss-cip-shanghai',FileNamePrefix:'upload/test/',OssInternetEndPoint:'https://oss-cn-shanghai.aliyuncs.com',Expiration:Math.floor(Date.now()/1000)+1800});
 
 test('every image inherits private temporary OSS access without an ACL override; V4 binds the object and STS token',async()=>{
-  const bytes=await sharp({create:{width:250,height:250,channels:3,background:'#427'}}).png().toBuffer();
-  const keys=['images/first.png','images/second.png'];for(const key of keys)await putObject(key,bytes,'image/png');
+  const fixtures=await Promise.all(['#427','#527'].map(background=>sharp({create:{width:250,height:250,channels:3,background}}).png().toBuffer()));
+  const keys=['images/first.png','images/second.png'];for(const [index,key] of keys.entries())await putObject(key,fixtures[index],'image/png');
   let uploaded=0,scanned=0,tokens=0;const uploadedKeys:string[]=[];
   globalThis.fetch=async(url,init)=>{
     if(init?.method==='PUT') {
-      uploaded++;const u=new URL(String(url));assert.equal(u.hostname,'oss-cip-shanghai.oss-cn-shanghai.aliyuncs.com');assert.equal(u.search,'');
+      const bytes=fixtures[uploaded++];const u=new URL(String(url));assert.equal(u.hostname,'oss-cip-shanghai.oss-cn-shanghai.aliyuncs.com');assert.equal(u.search,'');
       assert.equal(init.redirect,'error');assert.ok(Buffer.from(init.body as Uint8Array).equals(bytes));
       const headers=new Headers(init.headers);
       if(headers.has('x-oss-object-acl'))return new Response('<Error><Code>AccessDenied</Code><EC>0003-00000301</EC></Error>',{status:403});
