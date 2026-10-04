@@ -8,6 +8,8 @@ import { expireEventContactData } from './privacy';
 import { moderationRevisionForPost,moderationRevisionForDerivation,saveModeratedDerivation,discardUnavailableLinkPreview,processModeration } from './moderation';
 import { isLoginPageUrl } from '../shared/links';
 import { unavailablePostSQL } from './permissions';
+import { isDouyinShortUrl,parseDouyinVideoId } from '../shared/douyin';
+import { fetchDouyinEmbed } from './douyin';
 export const meili=searchClient;
 function strip(s:string){return s.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/\s+/g,' ').trim();}
 function meta(html:string,name:string){const tags=html.match(/<meta\b[^>]*>/gi)||[];for(const t of tags)if(new RegExp(`(?:property|name)=["']${name}["']`,'i').test(t))return strip(t.match(/content=["']([^"']*)/i)?.[1]||'');return '';}
@@ -25,17 +27,28 @@ export async function processLink(id:string,fetchPage:typeof safeFetch=safeFetch
     title=repoData.full_name;description=repoData.description||'';metadata={language:repoData.language,stars:repoData.stargazers_count,license:repoData.license?.spdx_id,homepage:repoData.homepage};
     const readme=await fetch(`${root}/readme`,{headers:{...headers,Accept:'application/vnd.github.raw+json'},signal:AbortSignal.timeout(15000)});if(readme.ok){const text=await readme.text();content=text.slice(0,100000);}else status='partial';
   } else {
-    const response=await fetchPage(l.url);
-    if(isLoginPageUrl(response.url)) {
-      // A login wall is a successful fetch with no usable preview. Finish the
-      // parsing job without saving its title/redirect metadata or queuing a
-      // moderation case. Existing moderation decisions remain authoritative.
-      await discardUnavailableLinkPreview(l.post_id,revision,id,derivedRevision);
-      return;
+    // Canonical video URLs can use the public player API even when the ordinary
+    // web page is a login wall. Short links only use the safely resolved URL.
+    const directId=l.platform==='douyin'?parseDouyinVideoId(l.url):null;
+    let response:Awaited<ReturnType<typeof safeFetch>>|undefined;
+    if(!directId)response=await fetchPage(l.url);
+    const videoId=directId||(l.platform==='douyin'&&isDouyinShortUrl(l.url)?parseDouyinVideoId(response?.url):null);
+    const player=videoId?await fetchDouyinEmbed(videoId,fetchPage):null;
+    if(player) {
+      title=player.title;metadata={douyinEmbed:player.embed};
+    } else {
+      response??=await fetchPage(l.url);
+      if(isLoginPageUrl(response.url)) {
+        // A login wall is a successful fetch with no usable preview. Finish the
+        // parsing job without saving its title/redirect metadata or queuing a
+        // moderation case. Existing moderation decisions remain authoritative.
+        await discardUnavailableLinkPreview(l.post_id,revision,id,derivedRevision);
+        return;
+      }
+      title=meta(response.body,'og:title')||strip(response.body.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]||'');description=meta(response.body,'og:description')||meta(response.body,'description');metadata={resolvedUrl:response.url};status=title||description?'partial':'failed';
+      // Generic sites only expose explicit previews, never scrape login-gated article text.
+      if(!title&&!description)throw new Error('来源未提供可读取的预览，原链接仍可打开');
     }
-    title=meta(response.body,'og:title')||strip(response.body.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]||'');description=meta(response.body,'og:description')||meta(response.body,'description');metadata={resolvedUrl:response.url};status=title||description?'partial':'failed';
-    // Generic sites only expose explicit previews, never scrape login-gated article text.
-    if(!title&&!description)throw new Error('来源未提供可读取的预览，原链接仍可打开');
   }
   await saveModeratedDerivation(l.post_id,revision,'link',id,derivedRevision,async client=>(await query(`UPDATE link_resources SET title=$2,description=$3,content=$4,metadata=$5,status=$6,error=NULL,fetched_at=now(),derivation_status='pending' WHERE id=$1 AND EXISTS(SELECT 1 FROM posts WHERE id=link_resources.post_id AND deleted_at IS NULL) RETURNING id`,[id,title,description,content,JSON.stringify(metadata),status],client)).length>0);
 }

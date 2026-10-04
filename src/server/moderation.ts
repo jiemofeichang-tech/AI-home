@@ -7,18 +7,20 @@ import { fail, type Actor, type Item } from '../shared/contracts';
 import { moderateContent, moderationProviderStatus, ModerationTransientError } from './moderation-provider';
 import { readModerationDraft, applyModerationDraft } from './moderation-drafts';
 import { extractWebUrls,isLoginPageUrl } from '../shared/links';
+import { isVideoMime } from '../shared/video';
 
 type TargetType='post'|'comment'|'draft'|'media'|'link';
 type Status='pending'|'review'|'rejected'|'approved'|'deleted';
 type Case={id:string;target_type:TargetType;target_id:string;author_id:string;status:Status;labels:string[];reason:string;appeal_reason:string;provider:string;reviewed_by:string|null;revision:number;generation:number;created_at:Date;updated_at:Date};
-type Target={author_id:string;text:string;displayText?:string;linkUrls?:string[];deleted_at:Date|null;hidden_at?:Date|null;moderation_status:string;images:{id:string;storageKey:string;mime:string}[];post_id?:string;community_id?:string|null;parentGeneration?:number;kind?:string;target_id?:string};
+type Target={author_id:string;text:string;displayText?:string;linkUrls?:string[];deleted_at:Date|null;hidden_at?:Date|null;moderation_status:string;images:{id:string;storageKey:string;mime:string}[];videos?:{id:string;mime:string}[];post_id?:string;community_id?:string|null;parentGeneration?:number;kind?:string;target_id?:string};
 const statuses=new Set<Status>(['pending','review','rejected','approved','deleted']);
 const unavailableReason='自动审核暂不可用，内容已隔离，请等待人工审核。';
-export function publicationReason(entry:{target_type:string;appeal_reason?:string},status:string) {
+export function publicationReason(entry:{target_type:string;appeal_reason?:string;labels?:string[]},status:string) {
   if(status==='pending')return '正在检查，完成后会自动更新发布状态。';
   if(status==='approved')return entry.target_type==='draft'?'资料已更新。':'已通过检查，按原来的发布范围展示。';
   if(status==='deleted')return '本次提交已撤回或移除。';
   if(entry.appeal_reason)return '你的说明已收到，正在等待管理员复核。';
+  if(entry.labels?.includes('video_manual_review'))return '视频已提交，等待管理员人工审核。';
   if(status==='rejected')return '这次提交暂未通过内容检查。你可以说明内容背景，申请管理员复核。';
   return '这次提交需要管理员复核，暂未公开。你可以补充说明或稍后查看结果。';
 }
@@ -69,7 +71,8 @@ async function readTarget(entry:Case,client?:PoolClient):Promise<Target|undefine
   const bodyUrls=new Set(extractWebUrls(row.body).map(url=>new URL(url).href));
   return {author_id:row.author_id,deleted_at:row.deleted_at,moderation_status:row.moderation_status,community_id:row.community_id,
     text:[row.body,row.agent_name||'',...links.map(link=>link.url).filter(url=>!bodyUrls.has(new URL(url).href))].filter(Boolean).join('\n'),linkUrls:links.map(link=>link.url),
-    images:media.map(image=>({id:image.id,storageKey:image.storage_key,mime:image.mime}))};
+    images:media.filter(item=>!isVideoMime(item.mime)).map(image=>({id:image.id,storageKey:image.storage_key,mime:image.mime})),
+    videos:media.filter(item=>isVideoMime(item.mime)).map(video=>({id:video.id,mime:video.mime}))};
 }
 async function lockedCase(id:string,client:PoolClient) {
   const [hint]=await query<Case>('SELECT * FROM moderation_cases WHERE id=$1',[id],client);
@@ -147,7 +150,7 @@ export async function moderationList(actor:Actor,input:{mine?:boolean;status?:st
     const hiddenAt=target?.hidden_at||visibility?.hidden_at||null;
     const unavailable=!!hiddenAt||!!visibility?.unavailable;
     items.push({id:entry.id,targetType:entry.target_type,targetId:entry.target_id,authorId:entry.author_id,authorName:author?.name||'社区成员',
-      text:removed?'':target.displayText??target.text,images:removed?[]:target.images.map(image=>image.id),status:visibleStatus,appealReason:entry.appeal_reason,
+      text:removed?'':target.displayText??target.text,images:removed?[]:target.images.map(image=>image.id),videos:removed?[]:target.videos||[],status:visibleStatus,appealReason:entry.appeal_reason,
       hiddenAt,unavailable,userReason:removed?publicationReason(entry,'deleted'):hiddenAt?'该内容已被管理员隐藏，暂不公开。':unavailable&&visibleStatus==='approved'?'原帖或所属内容暂不可见，这条内容暂不公开。':publicationReason(entry,visibleStatus),createdAt:entry.created_at,updatedAt:entry.updated_at,
       ...(!input.mine?{labels:entry.labels,reason:entry.reason,history:events,revision:entry.revision,provider:entry.provider,reviewedBy:entry.reviewed_by}:{}),
       ...(target?.kind?{draftKind:target.kind,resultTargetId:target.target_id}:{}),...(target?.post_id?{postId:target.post_id}:{}),...(entry.target_type==='post'?{postCommunityId:target?.community_id||null}:{})});
@@ -320,7 +323,12 @@ export async function processModeration(id:string,attempt=1):Promise<boolean> {
   if(!snapshot)return true;
   const {entry,target}=snapshot;
   let status:'approved'|'review'|'rejected'='review',labels:string[]=[],provider='unavailable',reason=unavailableReason;
-  try {
+  if(target.videos?.length) {
+    // Text/image providers do not inspect video frames or audio. A successful
+    // text check must never automatically publish an uploaded video.
+    status='review';labels=['video_manual_review'];provider='manual-video';
+    reason='视频需要管理员查看画面和声音后人工审核；审核通过前暂不公开。';
+  } else try {
     const result=await moderateContent({text:target.text,linkUrls:target.linkUrls,images:target.images.map(({storageKey,mime})=>({storageKey,mime})),dataId:`${entry.id}:${entry.revision}`});
     if(!['approved','review','rejected'].includes(result.decision))throw new Error('Invalid moderation result');
     status=result.decision;labels=result.labels.filter(label=>typeof label==='string').map(label=>label.slice(0,100)).slice(0,30);provider=result.provider.slice(0,80);

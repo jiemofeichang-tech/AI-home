@@ -15,7 +15,7 @@ function budget(name:string,fallback:number):number {
 export async function withImageUploadSlot<T>(request:Request,operation:()=>Promise<T>):Promise<T> {
   if(activeUploads>=budget('IMAGE_UPLOAD_CONCURRENCY',2)) {
     void request.body?.cancel().catch(()=>{});
-    fail(503,'图片上传繁忙，请稍后重试','IMAGE_UPLOAD_BUSY');
+    fail(503,'上传繁忙，请稍后重试','IMAGE_UPLOAD_BUSY');
   }
   activeUploads++;
   try{return await operation();}finally{activeUploads--;}

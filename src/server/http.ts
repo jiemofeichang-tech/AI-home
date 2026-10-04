@@ -6,13 +6,15 @@ import { query,transaction } from './db';
 import { config } from './config';
 import { contracts,scopes,AppError,fail,type Action } from '../shared/contracts';
 import { readablePost,scope,user,human,active } from './permissions';
-import { getObject,putObject,imageMime } from './storage';
+import { getObject,putObject,putObjectFile,imageMime } from './storage';
 import { consumeQuota } from './providers';
 import { PRIVACY_VERSION,EVENT_CONTACT_RETENTION_DAYS } from '../shared/privacy';
 import { exportOwnData,closeAccount,expireEventContactData,scheduleObjectDeletion } from './privacy';
 import { stripImageMetadata,readImageUploadForm,withImageUploadSlot } from './image-privacy';
 import { moderationMediaAccess } from './moderation';
 import { recordPresence } from './admin-stats';
+import { readVideoUpload,videoResponse } from './video';
+import { isVideoMime } from '../shared/video';
 
 export const routes:[string,string,Action][]=[
   ['GET','admin/stats','admin_stats'],
@@ -111,6 +113,30 @@ export async function handleApi(request:Request) {
       const [otp]=await query(`SELECT count FROM usage_counters WHERE key=$1 AND updated_at>now()-interval '5 minutes'`,[`dev-otp:${url.searchParams.get('phone')}`]);
       return Response.json({code:otp?String(otp.count).padStart(6,'0'):null},{headers:{'Cache-Control':'no-store'}});
     }
+    if(path==='media/video'&&request.method==='POST') {
+      scope(actor,'posts:write');
+      return await withImageUploadSlot(request,async()=>{
+        const upload=await readVideoUpload(request);
+        const id=randomUUID(),ext=upload.mime==='video/mp4'?'mp4':'webm',key=`videos/${id}.${ext}`;
+        let objectAttempted=false;
+        try {
+          if(request.signal.aborted)fail(400,'视频上传已取消');
+          const limit=Number(process.env.USER_DAILY_VIDEO_LIMIT||5);
+          if(!Number.isSafeInteger(limit)||limit<1)throw new Error('USER_DAILY_VIDEO_LIMIT must be a positive integer');
+          await consumeQuota(`upload-video:${actor.userId}:${new Date().toISOString().slice(0,10)}`,limit);
+          await transaction(async client=>{
+            await active(actor,client);
+            if(request.signal.aborted)fail(400,'视频上传已取消');
+            objectAttempted=true;await putObjectFile(key,upload.filePath,upload.mime);
+            if(request.signal.aborted)fail(400,'视频上传已取消');
+            await query(`INSERT INTO media(id,owner_id,storage_key,mime,bytes,original_name,ai_consent,status,usage_kind,moderation_status)
+              VALUES($1,$2,$3,$4,$5,$6,false,'ready','post','pending')`,[id,actor.userId,key,upload.mime,upload.bytes,`video.${ext}`],client);
+          });
+          return Response.json({id,url:`/api/v1/media/${id}`,mime:upload.mime},{headers:{'Cache-Control':'no-store'}});
+        } catch(error) {if(objectAttempted)await scheduleObjectDeletion(key);throw error;}
+        finally {await upload.cleanup();}
+      });
+    }
     if(path==='media'&&request.method==='POST') {
       scope(actor,'posts:write');return await withImageUploadSlot(request,async()=>{
         const form=await readImageUploadForm(request);const file=form.get('file');if(!(file instanceof File)||file.size>10*1024*1024) fail(400,'请上传不超过 10 MB 的图片');
@@ -126,12 +152,14 @@ export async function handleApi(request:Request) {
         return Response.json({id,url:`/api/v1/media/${id}`});
       });
     }
-    if(path.startsWith('moderation/media/')&&request.method==='GET') {
+    if(path.startsWith('moderation/media/')&&['GET','HEAD'].includes(request.method)) {
       const [m]=await query('SELECT * FROM media WHERE id=$1',[path.split('/')[2]]);if(!m)fail(404,'图片不存在');
       if(!await moderationMediaAccess(actor,m))fail(404,'图片不可见');
+      if(isVideoMime(m.mime))return await videoResponse(request,m as {storage_key:string;mime:string});
+      if(request.method==='HEAD')return new Response(null,{headers:{'Content-Type':m.mime,'Content-Length':String(m.bytes),'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
       const data=await getObject(m.storage_key);return new Response(new Uint8Array(data),{headers:{'Content-Type':m.mime,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
     }
-    if(path.startsWith('media/')&&request.method==='GET') {
+    if(path.startsWith('media/')&&['GET','HEAD'].includes(request.method)) {
       const [m]=await query('SELECT * FROM media WHERE id=$1',[path.split('/')[1]]);if(!m) fail(404,'图片不存在');
       if(actor.grantId) scope(actor,'content:read');
       if(m.post_id) await readablePost(actor,m.post_id);
@@ -144,6 +172,8 @@ export async function handleApi(request:Request) {
         const publiclyApproved=m.usage_kind==='avatar'&&m.moderation_status==='approved'&&currentAvatar.length>0;
         if(!publiclyApproved&&(actor.grantId||m.owner_id!==user(actor)))fail(403,'无权读取图片');
       }
+      if(isVideoMime(m.mime))return await videoResponse(request,m as {storage_key:string;mime:string});
+      if(request.method==='HEAD')return new Response(null,{headers:{'Content-Type':m.mime,'Content-Length':String(m.bytes),'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
       const data=await getObject(m.storage_key);return new Response(new Uint8Array(data),{headers:{'Content-Type':m.mime,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
     }
     if(path==='oauth/consent'&&request.method==='POST') {

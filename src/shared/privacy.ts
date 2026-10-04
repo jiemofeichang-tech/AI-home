@@ -1,2 +1,2 @@
-export const PRIVACY_VERSION='2026-09-30';
+export const PRIVACY_VERSION='2026-10-04';
 export const EVENT_CONTACT_RETENTION_DAYS=30;

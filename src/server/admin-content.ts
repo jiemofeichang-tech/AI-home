@@ -3,6 +3,7 @@ import type { PoolClient } from 'pg';
 import { query,transaction } from './db';
 import { active,human,unavailablePostSQL } from './permissions';
 import { fail,type Actor,type Item } from '../shared/contracts';
+import { isVideoMime } from '../shared/video';
 
 type TargetType='post'|'comment';
 async function admin(actor:Actor,client?:PoolClient) {
@@ -49,11 +50,14 @@ export async function adminContentList(actor:Actor,input:{targetType:TargetType;
     ${conditions.length?`WHERE ${conditions.join(' AND ')}`:''}
     ORDER BY t.created_at DESC,t.id DESC LIMIT ${bind(input.limit+1)}`,values);
   const page=rows.slice(0,input.limit),items:Item[]=[];
-  for(const row of page)items.push({id:row.id,targetType:input.targetType,authorId:row.author_id,authorName:row.author_name,body:row.body,
+  for(const row of page){
+    const media=input.targetType==='post'&&!row.deleted_at?await query('SELECT id,mime FROM media WHERE post_id=$1 ORDER BY created_at,id',[row.id]):[];
+    items.push({id:row.id,targetType:input.targetType,authorId:row.author_id,authorName:row.author_name,body:row.body,
     hiddenAt:row.hidden_at,deletedAt:row.deleted_at,moderationStatus:row.safety_status||row.moderation_status,createdAt:row.created_at,
     communityName:row.community_name,communityVisibility:row.community_visibility,unavailable:row.unavailable,
     ...(input.targetType==='comment'?{postId:row.post_id,postHiddenAt:row.post_hidden_at,postDeletedAt:row.post_deleted_at,postModerationStatus:row.post_moderation_status}:{}),
-    images:input.targetType==='post'&&!row.deleted_at?(await query('SELECT id FROM media WHERE post_id=$1 ORDER BY created_at,id',[row.id])).map(m=>m.id):[]});
+    images:media.filter(item=>!isVideoMime(item.mime)).map(item=>item.id),videos:media.filter(item=>isVideoMime(item.mime)).map(item=>({id:item.id,mime:item.mime}))});
+  }
   return {items,nextCursor:rows.length>input.limit?page.at(-1)!.id:null};
 }
 

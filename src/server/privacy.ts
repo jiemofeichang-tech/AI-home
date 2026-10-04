@@ -126,7 +126,7 @@ async function closeAccountTransaction(actor:Actor) {
     await run('DELETE FROM "session" WHERE "userId"=$1');
     await run('DELETE FROM "account" WHERE "userId"=$1');
     await run(`DELETE FROM verification WHERE privacy_verification_user(value)=$1 OR identifier=$2 OR identifier=$2||'-request-password-reset'`,[id,account.phoneNumber]);
-    await run(`DELETE FROM usage_counters WHERE key LIKE 'upload:'||$1||':%' OR ($2::text IS NOT NULL AND (key='dev-otp:'||$2 OR key LIKE 'sms:%:'||$2))`,[id,account.phoneNumber]);
+    await run(`DELETE FROM usage_counters WHERE key LIKE 'upload:'||$1||':%' OR key LIKE 'upload-video:'||$1||':%' OR ($2::text IS NOT NULL AND (key='dev-otp:'||$2 OR key LIKE 'sms:%:'||$2))`,[id,account.phoneNumber]);
     // Keep the consumed state and nonreversible code hash; nulling used_by would
     // either violate the check constraint or accidentally reopen an invitation.
     await run(`UPDATE invitation_codes SET label='',revoked_at=coalesce(revoked_at,now()) WHERE created_by=$1 OR used_by=$1`);

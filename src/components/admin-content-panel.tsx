@@ -4,11 +4,12 @@ import { useCallback,useEffect,useRef,useState } from 'react';
 import Link from 'next/link';
 import { RefreshCw,Search } from 'lucide-react';
 import styles from './admin-content-panel.module.css';
+import { UploadedVideo } from './uploaded-video';
 
 type TargetType='post'|'comment';
 type Status='all'|'visible'|'hidden'|'deleted';
 type Decision='hide'|'restore'|'delete';
-type ContentItem={id:string;targetType:TargetType;postId?:string;authorId:string;authorName:string;body:string;hiddenAt:string|null;deletedAt:string|null;moderationStatus:string;unavailable:boolean;createdAt:string;communityName?:string;communityVisibility?:string;images?:string[]};
+type ContentItem={id:string;targetType:TargetType;postId?:string;authorId:string;authorName:string;body:string;hiddenAt:string|null;deletedAt:string|null;moderationStatus:string;unavailable:boolean;createdAt:string;communityName?:string;communityVisibility?:string;images?:string[];videos?:Array<{id:string;mime:string}>};
 type Page={items:ContentItem[];nextCursor?:string|null};
 type Snapshot=Page&{query:string};
 
@@ -99,7 +100,7 @@ export function AdminContentPanel({revision,onChanged}:{revision:number;onChange
 }
 
 function AdminContentRow({item,disabled,busy,onModerate}:{item:ContentItem;disabled:boolean;busy:boolean;onModerate:(item:ContentItem,decision:Decision,reason:string)=>Promise<void>}) {
-  const [reason,setReason]=useState(''),[showImages,setShowImages]=useState(false);
+  const [reason,setReason]=useState(''),[showImages,setShowImages]=useState(false),[showVideos,setShowVideos]=useState(false);
   const deleted=!!item.deletedAt||item.moderationStatus==='deleted';
   const visible=!item.unavailable&&!deleted&&!item.hiddenAt&&item.moderationStatus==='approved';
   return <article className={styles.item}>
@@ -108,6 +109,7 @@ function AdminContentRow({item,disabled,busy,onModerate}:{item:ContentItem;disab
     <p className={styles.body}>{item.body||'（无文字内容）'}</p>
     {item.unavailable&&!deleted&&!item.hiddenAt&&item.moderationStatus==='approved'&&<p className={styles.scope}>所属帖子或引用来源暂不可见，此内容暂不展示。</p>}
     {!deleted&&!!item.images?.length&&<div><button type="button" className="text-button" aria-expanded={showImages} onClick={()=>setShowImages(value=>!value)}>{showImages?'收起图片':`查看 ${item.images.length} 张图片`}</button>{showImages&&<div className={styles.images}>{item.images.map(id=><img key={id} src={`/api/v1/moderation/media/${id}`} alt="待管理的帖子图片"/>)}</div>}</div>}
+    {!deleted&&!!item.videos?.length&&<div><button type="button" className="text-button" aria-expanded={showVideos} onClick={()=>setShowVideos(value=>!value)}>{showVideos?'收起视频':`查看 ${item.videos.length} 个视频`}</button>{showVideos&&item.videos.map(video=><UploadedVideo key={video.id} src={`/api/v1/moderation/media/${video.id}`} mime={video.mime} label="待管理的帖子视频"/>)}</div>}
     {visible&&item.communityVisibility!=='private'&&<Link className="text-button" href={`/posts/${item.postId||item.id}`}>{item.targetType==='comment'?'查看所属帖子':'打开帖子'}</Link>}
     {!deleted&&<><details className={styles.reason}><summary>处理说明（选填）</summary><input aria-label="处理说明（选填）" value={reason} onChange={event=>setReason(event.target.value)} maxLength={1000} placeholder="可留空，供后台记录" disabled={disabled}/></details><div className={styles.actions}>{item.hiddenAt?<button className="secondary" type="button" disabled={disabled} onClick={()=>void onModerate(item,'restore',reason)}>恢复显示</button>:<button className="secondary" type="button" disabled={disabled} onClick={()=>void onModerate(item,'hide',reason)}>隐藏{item.targetType==='post'?'帖子':'评论'}</button>}<button className="text-button danger" type="button" disabled={disabled} onClick={()=>void onModerate(item,'delete',reason)}>删除{item.targetType==='post'?'帖子':'评论'}</button>{busy&&<span className="muted" role="status">正在处理…</span>}</div></>}
   </article>;

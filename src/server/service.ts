@@ -6,6 +6,7 @@ import { contracts, fail, AppError, type Action, type Actor, type Item } from '.
 import { searchCandidates,searchClient } from './search';
 import { extractWebUrls } from '../shared/links';
 import { PRIVACY_VERSION,EVENT_CONTACT_RETENTION_DAYS } from '../shared/privacy';
+import { isVideoMime } from '../shared/video';
 import { createInvitations,listInvitations,revokeInvitation } from './invitations';
 import { enqueueModeration,moderationList,moderationDecide,moderationAppeal,moderationRetry,moderationWithdraw } from './moderation';
 import { submitModerationDraft } from './moderation-drafts';
@@ -103,7 +104,7 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
     case 'posts_get': return postView(a,p.id);
     case 'posts_create': {
       scope(a,p.originalId?'interactions:write':'posts:write');
-      if(!p.body&&!p.originalId&&!p.mediaIds.length&&!p.links.length) fail(400,'请输入内容或添加图片、链接');
+      if(!p.body&&!p.originalId&&!p.mediaIds.length&&!p.links.length) fail(400,'请输入内容或添加图片、视频、链接');
       if(p.communityId) await communityAccess(a,p.communityId,true);
       if(p.originalId) {
         const original=await readablePost(a,p.originalId,undefined,1);
@@ -112,17 +113,23 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
       return idempotent(a,action,p,async client=>{
         if(p.communityId) await communityAccess(a,p.communityId,true,false,client);
         if(p.originalId) await readablePost(a,p.originalId,client);
+        if(new Set(p.mediaIds).size!==p.mediaIds.length)fail(400,'请勿重复添加同一附件');
+        const attachments=p.mediaIds.length?await query("SELECT id,mime FROM media WHERE id=ANY($1::text[]) AND owner_id=$2 AND post_id IS NULL AND usage_kind='post' ORDER BY id FOR UPDATE",[p.mediaIds,a.userId],client):[];
+        if(attachments.length!==p.mediaIds.length)fail(403,'附件不存在、已使用或不属于你');
+        const videos=attachments.filter(item=>isVideoMime(item.mime));
+        if(videos.length&&(videos.length!==1||attachments.length!==1))fail(400,'每条动态可添加 1 个视频或最多 9 张图片，暂不支持混合发布');
         const id=uid();const tags=Array.from(new Set<string>((p.body.match(/#[\p{L}\p{N}_-]+/gu)||[]).map((s:string)=>s.slice(1))));
         await query('INSERT INTO posts(id,author_id,community_id,body,tags,original_id,agent_name,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[id,a.userId,p.communityId||null,p.body,tags,p.originalId||null,a.agentName||null,p.idempotencyKey||null],client);
-        for(const mediaId of p.mediaIds) {
-          const updated=await query("UPDATE media SET post_id=$1,ai_consent=$4,status=CASE WHEN $4 THEN 'pending' ELSE 'ready' END WHERE id=$2 AND owner_id=$3 AND post_id IS NULL AND usage_kind='post' RETURNING id,ai_consent",[id,mediaId,a.userId,p.imageAnalysisConsent],client);
-          if(!updated.length) fail(403,'图片不存在、已使用或不属于你');
-          if(updated[0].ai_consent)await enqueue('image',mediaId,client);
+        for(const attachment of attachments) {
+          const aiConsent=!isVideoMime(attachment.mime)&&p.imageAnalysisConsent;
+          const updated=await query("UPDATE media SET post_id=$1,ai_consent=$4,status=CASE WHEN $4 THEN 'pending' ELSE 'ready' END WHERE id=$2 AND owner_id=$3 AND post_id IS NULL AND usage_kind='post' RETURNING id,ai_consent",[id,attachment.id,a.userId,aiConsent],client);
+          if(!updated.length) fail(403,'附件不存在、已使用或不属于你');
+          if(updated[0].ai_consent)await enqueue('image',attachment.id,client);
         }
         const extracted=extractWebUrls(p.body);
         const urls=Array.from(new Set<string>([...p.links,...extracted])).slice(0,5);
         for(const url of urls) {
-          const host=new URL(url).hostname.toLowerCase();const platform=host==='github.com'?'github':/(^|\.)xiaohongshu\.com$|(^|\.)xhslink\.com$/.test(host)?'xiaohongshu':/(^|\.)douyin\.com$/.test(host)?'douyin':'web';
+          const host=new URL(url).hostname.toLowerCase();const platform=host==='github.com'?'github':/(^|\.)xiaohongshu\.com$|(^|\.)xhslink\.com$/.test(host)?'xiaohongshu':/(^|\.)douyin\.com$/.test(host)||host==='www.iesdouyin.com'?'douyin':'web';
           const linkId=uid();await query('INSERT INTO link_resources(id,post_id,url,platform) VALUES($1,$2,$3,$4)',[linkId,id,url,platform],client); await enqueue('link',linkId,client);
         }
         const moderation=await enqueueModeration('post',id,a.userId!,client);await audit(a,action,id,client);return {id,moderationId:moderation.id,moderationStatus:'pending'};
