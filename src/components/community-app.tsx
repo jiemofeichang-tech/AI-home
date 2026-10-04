@@ -18,10 +18,12 @@ import { PrivacyPolicy } from './privacy-policy';
 import { PrivacySettings } from './privacy-settings';
 import { DouyinEmbed } from './douyin-embed';
 import { UploadedVideo } from './uploaded-video';
+import { ImageOrderEditor } from './image-order-editor';
+import { PostProcessing } from './post-processing';
 import videoStyles from './uploaded-video.module.css';
 import { isVideoMime,MAX_VIDEO_BYTES } from '@/shared/video';
 import { PRIVACY_VERSION } from '@/shared/privacy';
-import { linkPreviewLabel,parsingJobLabel,shouldPollParsing,shouldClearPageOnError } from '@/shared/parsing-progress';
+import { linkPreviewLabel,shouldPollParsing,shouldClearPageOnError } from '@/shared/parsing-progress';
 
 async function api(path:string,method='GET',body?:unknown,signal?:AbortSignal) {
   const response=await fetch(`/api/v1/${path}`,{method,headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined,signal,...(signal?{cache:'no-store' as const}:{})});
@@ -195,7 +197,7 @@ function PostCard({post,detail=false,ctx}:{post:Item;detail?:boolean;ctx:Item & 
         const card=<a className={`link-card ${l.platform==='github'?'github-card':''}`} key={l.id} href={l.url} target="_blank" rel="noreferrer"><div className="link-icon">{l.platform==='github'?<Code2 size={24}/>:<Link2 size={22}/>}</div><div><span className="link-source">{l.platform==='github'?'GITHUB · 开源项目':l.platform==='xiaohongshu'?'小红书':l.platform==='douyin'?'抖音':new URL(l.url).hostname}</span><strong>{l.title||l.url.replace(/^https?:\/\//,'')}</strong>{l.description&&<p>{l.description}</p>}<span className="link-meta">{l.metadata?.language&&`${l.metadata.language} · `}{l.metadata?.stars!==undefined&&`★ ${l.metadata.stars} · `}{linkPreviewLabel(l,post.processing)}{l.fetched_at&&` · ${ago(l.fetched_at)}更新`}</span></div><ArrowUpRight size={17}/></a>;
         return l.platform==='douyin'?<DouyinEmbed key={l.id} metadata={l.metadata} url={l.url} title={l.title} description={l.description}>{card}</DouyinEmbed>:card;
       })}
-      {!!post.processing?.length&&<div className="processing-status">{post.processing.map((job:Item)=><div key={job.id}><span>{job.kind==='image'?'图片理解':'链接解析'}：{parsingJobLabel(job)}</span>{['failed','blocked'].includes(job.status)&&<button className="text-button" disabled={busy} onClick={()=>run(()=>act('jobs_retry',{id:job.id}),'已安排重试')}>重试</button>}</div>)}</div>}
+      {!!post.processing?.length&&<PostProcessing jobs={post.processing} media={post.media||[]} busy={busy} onRetry={jobId=>void run(()=>act('jobs_retry',{id:jobId}),'已安排重试')}/>}
       {post.original&&<Link href={`/posts/${post.original.id}`} className="quote"><strong>{post.original.author?.name}</strong><p>{post.original.body}</p></Link>}
       <div className="post-actions"><button className={reaction('like').mine?'liked':''} aria-label="点赞" onClick={()=>{if(needLogin())run(()=>act('reactions_set',{id:post.id,kind:'like',active:!reaction('like').mine}),'已更新点赞');}}><Heart size={18}/><span>{reaction('like').count||'喜欢'}</span></button><button aria-label="评论" onClick={()=>setShowReply(!showReply)}><MessageCircle size={18}/><span>{post.comments?.length||'评论'}</span></button><button aria-label="引用转发" onClick={()=>createPost(post)}><Repeat2 size={18}/><span>{post.repostCount||'转发'}</span></button><button aria-label="收藏" className={reaction('bookmark').mine?'saved':''} onClick={()=>{if(needLogin())run(()=>act('reactions_set',{id:post.id,kind:'bookmark',active:!reaction('bookmark').mine}),'收藏已更新');}}><Bookmark size={18}/></button></div>
       {showReply&&<div className="replies">{post.comments?.map((c:Item)=><div className="reply" key={c.id}><Avatar image={c.image} name={c.name} size="small"/><div><strong>{c.name}</strong>{c.agent_name&&<span className="muted"> · Agent 代发</span>}<p>{c.body}</p>{me?.role==='admin'&&<div className={adminContentStyles.quickActions} role="group" aria-label="管理员评论操作"><button type="button" className="text-button" disabled={busy} onClick={()=>void moderateContent('comment',c.id,'hide')}>隐藏评论</button><button type="button" className="text-button danger" disabled={busy} onClick={()=>void moderateContent('comment',c.id,'delete')}>删除评论</button></div>}</div></div>)}<form className="reply-form" onSubmit={e=>{e.preventDefault();if(needLogin()&&reply.trim())run(async()=>{const result=await act('comments_create',{id:post.id,body:reply,idempotencyKey:crypto.randomUUID()});setReply('');return result;},'评论已发送，安全检查通过后自动展示。');}}><input aria-label="评论内容" placeholder="说说你的想法…" value={reply} onChange={e=>setReply(e.target.value)} maxLength={10000}/><button className="icon-btn" aria-label="发送评论" disabled={busy}><Send size={18}/></button></form></div>}
@@ -208,6 +210,7 @@ function Composer({ctx}:{ctx:Item & {communities:Item[]}}){
   const [imageAnalysisConsent,setImageAnalysisConsent]=useState(false);
   const [body,setBody]=useState(''),[links,setLinks]=useState(''),[media,setMedia]=useState<Item[]>([]),[communityId,setCommunityId]=useState(section==='communities'&&id?id:original?.community?.visibility==='private'?original.community_id:''),[uploading,setUploading]=useState(false),[error,setError]=useState('');
   const key=useRef(crypto.randomUUID());
+  const [uploadProgress,setUploadProgress]=useState({current:0,total:0});
   const uploadRequest=useRef<AbortController|null>(null),submitting=useRef(false),imageInput=useRef<HTMLInputElement>(null),videoInput=useRef<HTMLInputElement>(null);
   useEffect(()=>()=>{uploadRequest.current?.abort();uploadRequest.current=null;},[]);
   const detectedLinks=extractWebUrls(links);
@@ -223,13 +226,14 @@ function Composer({ctx}:{ctx:Item & {communities:Item[]}}){
     if(files.some(file=>file.size===0||file.size>(kind==='video'?MAX_VIDEO_BYTES:10*1024*1024))){setError(kind==='video'?'视频不能为空，且不能超过 50 MiB。':'图片不能为空，且每张不能超过 10 MB。');return;}
     const controller=new AbortController();uploadRequest.current=controller;setUploading(true);
     try {
-      for(const file of files){
+      for(const [index,file] of files.entries()){
+        setUploadProgress({current:index+1,total:files.length});
         const form=new FormData();if(kind==='image')form.set('file',file);
         const response=await fetch(kind==='video'?'/api/v1/media/video':'/api/v1/media',{method:'POST',headers:kind==='video'?{'Content-Type':file.type}:undefined,body:kind==='video'?file:form,signal:controller.signal});
         const result=await response.json().catch(()=>null);
         if(!response.ok||typeof result?.id!=='string'||typeof result?.url!=='string')throw new Error(result?.error||'上传失败，请稍后重试。');
         if(controller.signal.aborted||uploadRequest.current!==controller)return;
-        setMedia(old=>[...old,{...result,mime:result.mime||file.type}]);
+        setMedia(old=>[...old,{...result,mime:result.mime||file.type,filename:file.name}]);
         if(kind==='video')setImageAnalysisConsent(false);
       }
     } catch(e){if(!controller.signal.aborted&&uploadRequest.current===controller){setError((e as Error).message);setToast((e as Error).message);}}
@@ -237,6 +241,10 @@ function Composer({ctx}:{ctx:Item & {communities:Item[]}}){
   }
   function cancelUpload(){
     uploadRequest.current?.abort();uploadRequest.current=null;setUploading(false);setError('上传已取消，已上传的内容保持不变。');
+  }
+  function moveImage(sourceId:string,targetId:string){
+    if(uploadRequest.current||submitting.current||busy)return;
+    setMedia(current=>{const from=current.findIndex(image=>image.id===sourceId),to=current.findIndex(image=>image.id===targetId);if(from<0||to<0||from===to)return current;const ordered=[...current];ordered.splice(to,0,...ordered.splice(from,1));return ordered;});
   }
   async function submit(e:FormEvent<HTMLFormElement>){
     e.preventDefault();if(uploadRequest.current||submitting.current||busy)return;setError('');
@@ -254,13 +262,13 @@ function Composer({ctx}:{ctx:Item & {communities:Item[]}}){
     {original&&<div className="quote"><strong>{original.author?.name}</strong><p>{original.body}</p></div>}
     <Field label="分享链接或分享文案（可选）"><textarea rows={2} value={links} onChange={e=>{setLinks(e.target.value);setError('');}} maxLength={10000} placeholder="粘贴网址，或抖音、小红书的整段分享文案"/></Field>
     {detectedLinks.length>0&&<div className="composer-links"><span>已识别 {detectedLinks.length} 个链接</span><ul>{detectedLinks.slice(0,5).map(url=><li key={url}>{url}</li>)}</ul></div>}
-    {hasVideo?media.map(m=><div className={videoStyles.videoPreview} key={m.id}><div className={videoStyles.previewHeading}><strong>待发布视频</strong><button type="button" className="text-button danger" disabled={busy||uploading} onClick={()=>{setMedia([]);setError('');}}>移除视频</button></div><UploadedVideo src={m.url} mime={m.mime} label="待发布视频预览"/></div>):media.length>0&&<div className="upload-previews">{media.map(m=><div key={m.id}><img src={m.url} alt="待发布图片"/><button type="button" aria-label="移除图片" disabled={busy||uploading} onClick={()=>{setMedia(media.filter(x=>x.id!==m.id));setError('');}}><X size={14}/></button></div>)}</div>}
+    {hasVideo?media.map(m=><div className={videoStyles.videoPreview} key={m.id}><div className={videoStyles.previewHeading}><strong>待发布视频</strong><button type="button" className="text-button danger" disabled={busy||uploading} onClick={()=>{setMedia([]);setError('');}}>移除视频</button></div><UploadedVideo src={m.url} mime={m.mime} label="待发布视频预览"/></div>):media.length>0&&<ImageOrderEditor images={media.map(m=>({id:m.id,url:m.url,filename:m.filename}))} disabled={busy||uploading} onMove={moveImage} onRemove={imageId=>{if(uploadRequest.current||submitting.current||busy)return;setMedia(current=>current.filter(image=>image.id!==imageId));setError('');}}/>}
     {media.length>0&&!hasVideo&&<label className="checkbox privacy-choice"><input type="checkbox" checked={imageAnalysisConsent} onChange={e=>setImageAnalysisConsent(e.target.checked)}/><span>允许将本次图片交给配置的 AI 服务提取文字和描述（可选，默认关闭；关闭仍可提交图片审核）。请勿上传身份证、医疗等私密资料。<Link href="/privacy" target="_blank">了解处理方式</Link></span></label>}
     <p className="moderation-submit-notice">{hasVideo?'视频需管理员人工审核，通过后按所选范围展示。':'文字和图片通过安全检查后展示。文字和图片会交给已配置的阿里云内容安全服务检测，与可选的图片文字提取用途不同。'}<Link href="/privacy" target="_blank">查看说明</Link></p>
-    <p className={videoStyles.help}>最多 9 张图片，或 1 个 MP4 / WebM 视频（最大 50 MiB），图片和视频不能混选。</p>
-    {uploading&&<div className={videoStyles.uploadProgress} role="status"><span>正在上传，请稍候…</span><button type="button" className="text-button" onClick={cancelUpload}>取消上传</button></div>}
+    <p className={videoStyles.help}>图片可一次多选，最多 9 张。上传后可拖动调整顺序，按预览顺序发布。也可单独添加 1 个 MP4 / WebM 视频（最大 50 MiB），图片和视频不能混选。</p>
+    {uploading&&<div className={videoStyles.uploadProgress} role="status"><span>正在上传 {uploadProgress.current}/{uploadProgress.total}，请稍候…</span><button type="button" className="text-button" onClick={cancelUpload}>取消上传</button></div>}
     {error&&<p className="composer-error" role="alert">{error}</p>}
-    <div className={`form-footer ${videoStyles.footer}`}><div className={videoStyles.uploadActions}><button type="button" className="upload-button" disabled={busy||uploading} onClick={()=>imageInput.current?.click()}><ImagePlus size={20}/>添加图片</button><button type="button" className="upload-button" disabled={busy||uploading} onClick={()=>videoInput.current?.click()}><Video size={20}/>添加视频</button></div><button type="submit" className="primary" disabled={busy||uploading}>{busy?'发布中…':'发布'}{communityId?'到社群':''}<ArrowUpRight size={17}/></button></div>
+    <div className={`form-footer ${videoStyles.footer}`}><div className={videoStyles.uploadActions}><button type="button" className="upload-button" disabled={busy||uploading} onClick={()=>imageInput.current?.click()}><ImagePlus size={20}/>多选图片</button><button type="button" className="upload-button" disabled={busy||uploading} onClick={()=>videoInput.current?.click()}><Video size={20}/>添加视频</button></div><button type="submit" className="primary" disabled={busy||uploading}>{busy?'发布中…':'发布'}{communityId?'到社群':''}<ArrowUpRight size={17}/></button></div>
     <input ref={imageInput} className={videoStyles.fileInput} type="file" aria-label="选择帖子图片" accept="image/png,image/jpeg,image/webp,image/gif" multiple disabled={busy||uploading} onChange={event=>{const files=Array.from(event.currentTarget.files||[]);event.currentTarget.value='';void upload(files,'image');}}/>
     <input ref={videoInput} className={videoStyles.fileInput} type="file" aria-label="选择帖子视频" accept="video/mp4,video/webm" disabled={busy||uploading} onChange={event=>{const files=Array.from(event.currentTarget.files||[]);event.currentTarget.value='';void upload(files,'video');}}/>
   </form></Modal>;

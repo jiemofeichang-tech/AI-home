@@ -1,0 +1,37 @@
+.images summary {
+  cursor: pointer;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.images .help {
+  margin: 8px 0;
+  line-height: 1.7;
+}
+
+.rows,
+.links {
+  display: grid;
+  gap: 6px;
+}
+
+.images + .links {
+  margin-top: 8px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-width: 0;
+  line-height: 1.7;
+}
+
+.row > span {
+  overflow-wrap: anywhere;
+}
+
+.row > button {
+  flex-shrink: 0;
+}

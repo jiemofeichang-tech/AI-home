@@ -66,7 +66,7 @@ async function readTarget(entry:Case,client?:PoolClient):Promise<Target|undefine
   const [row]=await query(`SELECT * FROM ${table} WHERE id=$1${client?' FOR UPDATE':''}`,[entry.target_id],client);
   if(!row)return undefined;
   if(entry.target_type==='comment')return {author_id:row.author_id,text:[row.body,row.agent_name||''].join('\n'),deleted_at:row.deleted_at,hidden_at:row.hidden_at,moderation_status:row.moderation_status,images:[],post_id:row.post_id};
-  const media=await query('SELECT id,storage_key,mime FROM media WHERE post_id=$1 ORDER BY created_at,id',[row.id],client);
+  const media=await query('SELECT id,storage_key,mime FROM media WHERE post_id=$1 ORDER BY position NULLS LAST,created_at,id',[row.id],client);
   const links=await query('SELECT url FROM link_resources WHERE post_id=$1 ORDER BY id',[row.id],client);
   const bodyUrls=new Set(extractWebUrls(row.body).map(url=>new URL(url).href));
   return {author_id:row.author_id,deleted_at:row.deleted_at,moderation_status:row.moderation_status,community_id:row.community_id,

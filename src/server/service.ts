@@ -33,7 +33,7 @@ async function publicUser(id:string,client?:PoolClient) {
 export async function postView(a:Actor,id:string,depth=0):Promise<Item> {
   const p=await readablePost(a,id);
   const [author,media,links,comments,reactions,counts]=await Promise.all([
-    publicUser(p.author_id),query("SELECT id,mime,bytes,CASE WHEN derivation_status='approved' THEN extracted_text ELSE '' END AS extracted_text,CASE WHEN derivation_status='approved' THEN description ELSE '' END AS description,status FROM media WHERE post_id=$1 AND moderation_status='approved'",[id]),
+    publicUser(p.author_id),query("SELECT id,mime,bytes,CASE WHEN derivation_status='approved' THEN extracted_text ELSE '' END AS extracted_text,CASE WHEN derivation_status='approved' THEN description ELSE '' END AS description,status FROM media WHERE post_id=$1 AND moderation_status='approved' ORDER BY position NULLS LAST,created_at,id",[id]),
     query("SELECT id,post_id,url,platform,CASE WHEN derivation_status='approved' THEN title ELSE '' END AS title,CASE WHEN derivation_status='approved' THEN description ELSE '' END AS description,CASE WHEN derivation_status='approved' THEN content ELSE '' END AS content,CASE WHEN derivation_status='approved' THEN metadata ELSE '{}'::jsonb END AS metadata,status,fetched_at FROM link_resources WHERE post_id=$1 AND moderation_status='approved'",[id]),
     query(`SELECT c.id,c.body,c.created_at,c.agent_name,u.id AS author_id,u.name,u.image FROM comments c JOIN "user" u ON u.id=c.author_id WHERE post_id=$1 AND c.deleted_at IS NULL AND c.hidden_at IS NULL AND c.moderation_status='approved' AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$2 AND b.blocked_id=c.author_id) OR (b.blocked_id=$2 AND b.blocker_id=c.author_id)) ORDER BY c.created_at LIMIT 100`,[id,a.userId||'']),
     query('SELECT kind,count(*)::int AS count,bool_or(user_id=$2) AS mine FROM reactions WHERE post_id=$1 GROUP BY kind',[id,a.userId||'']),
@@ -116,13 +116,15 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
         if(new Set(p.mediaIds).size!==p.mediaIds.length)fail(400,'请勿重复添加同一附件');
         const attachments=p.mediaIds.length?await query("SELECT id,mime FROM media WHERE id=ANY($1::text[]) AND owner_id=$2 AND post_id IS NULL AND usage_kind='post' ORDER BY id FOR UPDATE",[p.mediaIds,a.userId],client):[];
         if(attachments.length!==p.mediaIds.length)fail(403,'附件不存在、已使用或不属于你');
+        // Lock in a stable order, but persist the order chosen by the author.
+        const positions=new Map((p.mediaIds as string[]).map((mediaId,position)=>[mediaId,position]));
         const videos=attachments.filter(item=>isVideoMime(item.mime));
         if(videos.length&&(videos.length!==1||attachments.length!==1))fail(400,'每条动态可添加 1 个视频或最多 9 张图片，暂不支持混合发布');
         const id=uid();const tags=Array.from(new Set<string>((p.body.match(/#[\p{L}\p{N}_-]+/gu)||[]).map((s:string)=>s.slice(1))));
         await query('INSERT INTO posts(id,author_id,community_id,body,tags,original_id,agent_name,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[id,a.userId,p.communityId||null,p.body,tags,p.originalId||null,a.agentName||null,p.idempotencyKey||null],client);
         for(const attachment of attachments) {
           const aiConsent=!isVideoMime(attachment.mime)&&p.imageAnalysisConsent;
-          const updated=await query("UPDATE media SET post_id=$1,ai_consent=$4,status=CASE WHEN $4 THEN 'pending' ELSE 'ready' END WHERE id=$2 AND owner_id=$3 AND post_id IS NULL AND usage_kind='post' RETURNING id,ai_consent",[id,attachment.id,a.userId,aiConsent],client);
+          const updated=await query("UPDATE media SET post_id=$1,ai_consent=$4,status=CASE WHEN $4 THEN 'pending' ELSE 'ready' END,position=$5 WHERE id=$2 AND owner_id=$3 AND post_id IS NULL AND usage_kind='post' RETURNING id,ai_consent",[id,attachment.id,a.userId,aiConsent,positions.get(attachment.id)],client);
           if(!updated.length) fail(403,'附件不存在、已使用或不属于你');
           if(updated[0].ai_consent)await enqueue('image',attachment.id,client);
         }

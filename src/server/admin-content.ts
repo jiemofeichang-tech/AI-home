@@ -51,7 +51,7 @@ export async function adminContentList(actor:Actor,input:{targetType:TargetType;
     ORDER BY t.created_at DESC,t.id DESC LIMIT ${bind(input.limit+1)}`,values);
   const page=rows.slice(0,input.limit),items:Item[]=[];
   for(const row of page){
-    const media=input.targetType==='post'&&!row.deleted_at?await query('SELECT id,mime FROM media WHERE post_id=$1 ORDER BY created_at,id',[row.id]):[];
+    const media=input.targetType==='post'&&!row.deleted_at?await query('SELECT id,mime FROM media WHERE post_id=$1 ORDER BY position NULLS LAST,created_at,id',[row.id]):[];
     items.push({id:row.id,targetType:input.targetType,authorId:row.author_id,authorName:row.author_name,body:row.body,
     hiddenAt:row.hidden_at,deletedAt:row.deleted_at,moderationStatus:row.safety_status||row.moderation_status,createdAt:row.created_at,
     communityName:row.community_name,communityVisibility:row.community_visibility,unavailable:row.unavailable,

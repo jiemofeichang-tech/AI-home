@@ -1,0 +1,25 @@
+.editor { margin: 16px 0; }
+.heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 13px; }
+.heading span, .help { color: var(--muted); font-size: 12px; }
+.help { margin: 6px 0 12px; line-height: 1.7; }
+.list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; padding: 0; margin: 0; list-style: none; }
+.item { position: relative; min-width: 0; border-radius: 10px; outline: 2px solid transparent; outline-offset: 3px; }
+.thumbnail { display: block; position: relative; width: 100%; padding: 0; aspect-ratio: 1; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--surface, #f7f7f8); cursor: grab; touch-action: none; user-select: none; }
+.thumbnail img { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.thumbnail:active { cursor: grabbing; }
+.thumbnail:disabled { cursor: default; }
+.thumbnail:focus-visible, .moves button:focus-visible, .remove:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.badge { position: absolute; top: 6px; left: 6px; display: grid; place-items: center; min-width: 24px; height: 24px; padding: 0 5px; border-radius: 6px; background: var(--ink); color: white; font-size: 12px; font-weight: 600; }
+.grip { position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%); display: grid; place-items: center; padding: 3px 8px; border-radius: 20px; background: rgba(255,255,255,.92); color: #555; }
+.remove { position: absolute; top: -5px; right: -5px; z-index: 1; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 2px solid white; border-radius: 50%; background: var(--ink); color: white; }
+.moves { display: flex; justify-content: space-between; gap: 2px; margin-top: 4px; }
+.moves button { display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-height: 34px; padding: 3px 2px; color: var(--ink); font-size: 11px; }
+.moves button:disabled, .remove:disabled { opacity: .35; cursor: default; }
+.dragging { opacity: .5; }
+.target { outline-color: var(--ink); }
+.srOnly { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+@media (max-width: 420px) {
+  .list { gap: 12px 8px; }
+  .moves button { flex: 1; min-height: 36px; }
+  .moves span { display: none; }
+}
