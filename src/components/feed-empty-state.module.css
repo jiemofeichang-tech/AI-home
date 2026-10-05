@@ -1,0 +1,9 @@
+.empty p {
+  max-width: 340px;
+  margin: 0 auto;
+  line-height: 1.85;
+}
+
+.action {
+  margin-top: 20px;
+}

@@ -1,0 +1,150 @@
+.content {
+  display: grid;
+  gap: 28px;
+  padding-top: 28px;
+  min-width: 0;
+}
+
+.section {
+  min-width: 0;
+}
+
+.section h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.caption {
+  margin: -4px 0 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.topics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.topics button {
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--subtle);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.topics button:hover {
+  border-color: var(--line-strong);
+  background: var(--hover);
+}
+
+.authors,
+.links {
+  display: grid;
+  gap: 4px;
+}
+
+.author {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  min-width: 0;
+}
+
+.author > span:nth-child(2) {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.author strong {
+  font-size: 13px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.author small,
+.author > svg {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.author:hover strong,
+.links a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.secondary {
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-bottom: 6px;
+}
+
+.heading h3 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.heading > a {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.links > a {
+  padding: 6px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.event {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.event time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.agent {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.agent span {
+  flex: 1;
+}
+
+.agent:hover {
+  color: var(--ink);
+}

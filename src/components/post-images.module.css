@@ -1,0 +1,44 @@
+.gallery { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; margin-top: 14px; }
+.openImage { display: block; width: 100%; min-width: 0; padding: 0; overflow: hidden; border: 1px solid var(--line, #e6e6e9); border-radius: 12px; background: var(--surface, #fff); color: var(--ink, #111113); text-align: left; cursor: zoom-in; }
+.openImage > img { display: block; width: 100%; height: auto; max-height: none; object-fit: contain; }
+.imageHeading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 10px 12px; background: var(--subtle, #f6f6f7); color: var(--muted, #71717a); font-size: 12px; }
+.imageHeading > span:last-child { display: inline-flex; align-items: center; gap: 5px; }
+.openImage:focus-visible, .dialog button:focus-visible, .viewport:focus-visible { outline: 2px solid var(--ink, #111113); outline-offset: 3px; }
+.dialog { position: fixed; inset: 0; width: min(1180px, calc(100vw - 24px)); height: calc(100dvh - 24px); max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--line, #e6e6e9); border-radius: 16px; background: var(--surface, #fff); color: var(--ink, #111113); box-shadow: 0 20px 80px #0005; }
+.dialog[open] { display: flex; flex-direction: column; }
+.dialog::backdrop { background: rgb(0 0 0 / 65%); }
+.header { display: flex; align-items: center; justify-content: space-between; flex: none; gap: 12px; padding: 10px 16px 4px; }
+.title { display: flex; align-items: baseline; gap: 12px; font-size: 15px; }
+.title > span { color: var(--muted, #71717a); font-size: 13px; }
+.dialog button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 36px; padding: 5px 9px; border: 1px solid transparent; border-radius: 7px; color: inherit; background: transparent; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.dialog button:hover:not(:disabled) { background: var(--subtle, #f6f6f7); }
+.dialog button:disabled { opacity: .35; cursor: default; }
+.dialog .close { width: 40px; height: 40px; padding: 0; }
+.toolbar { display: flex; align-items: center; flex-wrap: wrap; flex: none; gap: 6px 16px; padding: 4px 12px 10px; border-bottom: 1px solid var(--line, #e6e6e9); }
+.navigation, .zoom { display: flex; align-items: center; gap: 2px; }
+.zoom > span { min-width: 40px; text-align: center; color: var(--muted, #71717a); font-size: 12px; font-variant-numeric: tabular-nums; }
+.dialog .mode { margin-left: auto; border-color: var(--line, #e6e6e9); }
+.dialog .mode[aria-pressed="true"] { background: var(--ink, #111113); border-color: var(--ink, #111113); color: #fff; }
+.dialog .mode[aria-pressed="true"]:hover { background: #343438; }
+.viewport { position: relative; flex: 1; min-height: 0; min-width: 0; padding: 16px; overflow: auto; overscroll-behavior: contain; background: #ededf0; scroll-behavior: auto; touch-action: pan-x pan-y pinch-zoom; }
+.reading { margin-inline: auto; }
+.figure { margin: 0 0 18px; padding: 0; background: #fff; }
+.figure:last-child { margin-bottom: 0; }
+.figure figcaption { padding: 8px 12px; border-bottom: 1px solid #eee; background: #fafafa; color: #71717a; font-size: 12px; }
+.figure > img { display: block; width: 100%; height: auto; max-height: none; object-fit: contain; }
+.error { margin: 0; padding: 24px; color: #71717a; font-size: 13px; }
+.thumbnails { position: relative; display: flex; flex: none; gap: 8px; max-width: 100%; padding: 10px 16px; overflow-x: auto; overscroll-behavior-x: contain; border-top: 1px solid var(--line, #e6e6e9); }
+.dialog .thumbnails button { position: relative; flex: 0 0 56px; width: 56px; height: 56px; min-height: 0; padding: 2px; overflow: hidden; border: 2px solid transparent; background: #f1f1f3; }
+.thumbnails img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.dialog .thumbnails button[aria-current="true"] { border-color: var(--ink, #111113); }
+.thumbnails button > span { position: absolute; left: 1px; bottom: 1px; min-width: 17px; padding: 1px 3px; border-radius: 3px; background: #111113d9; color: #fff; font-size: 10px; }
+@media (max-width: 560px) {
+  .dialog { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
+  .header { padding: max(8px, env(safe-area-inset-top)) 10px 2px; }
+  .toolbar { gap: 4px 8px; padding: 2px 8px 8px; }
+  .dialog button { min-height: 40px; padding: 5px 7px; }
+  .navigation span { display: none; }
+  .navigation button { min-width: 36px; }
+  .viewport { padding: 10px; }
+  .thumbnails { padding: 8px 10px max(8px, env(safe-area-inset-bottom)); }
+}
