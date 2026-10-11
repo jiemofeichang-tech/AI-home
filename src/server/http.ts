@@ -35,7 +35,7 @@ export function openapi() {
     const pathParams=[...path.matchAll(/:(\w+)/g)].map(m=>({name:m[1],in:'path',required:true,schema:{type:'string'}}));
     const queryParams=method==='GET'?Object.entries(schema.properties||{}).filter(([name])=>!pathParams.some(p=>p.name===name)).map(([name,value])=>({name,in:'query',required:schema.required?.includes(name)||false,schema:value})):[];
     for(const parameter of pathParams){if(schema.properties)delete schema.properties[parameter.name];schema.required=schema.required?.filter(name=>name!==parameter.name);}
-    const publicRead=['posts_list','posts_get','communities_list','communities_get','events_list','events_get','search','profile_get'].includes(action);
+    const publicRead=['communities_list','communities_get','events_list','events_get','profile_get'].includes(action);
     (paths[key]||={})[method.toLowerCase()]={operationId:action,parameters:[...pathParams,...queryParams],...(!['GET','DELETE'].includes(method)?{requestBody:{required:true,content:{'application/json':{schema}}}}:{}),responses:{200:{description:'成功',content:{'application/json':{schema:{type:'object'}}}},401:{description:'需要登录或授权'},403:{description:'没有操作权限'},409:{description:'名额已满或幂等冲突'}},security:[{bearerAuth:[]},...(publicRead?[{}]:[])]};
   }
   return {openapi:'3.0.3',info:{title:'AI 社区 API',version:'0.1.0'},servers:[{url:`${config.url}/api/v1`}],paths,components:{securitySchemes:{bearerAuth:{type:'http',scheme:'bearer'}}}};

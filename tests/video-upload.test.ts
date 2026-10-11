@@ -160,25 +160,26 @@ test('safe cloud text results cannot auto-approve a video or enqueue it for imag
     await moderation.processModeration(post.moderationId);
   }finally{globalThis.fetch=savedFetch;keys.forEach((key,index)=>{if(saved[index]===undefined)delete process.env[key];else process.env[key]=saved[index];});}
   assert.equal((await caseFor(post.id)).status,'review');assert.deepEqual(actions,[]);
-  await denied(await request(`media/${video.id}`));await assert.rejects(execute('posts_get',{id:post.id},{}));
-  await approve(post.moderationId);assert.equal((await execute('posts_get',{id:post.id},{})).media[0].mime,'video/mp4');
+  await denied(await request(`media/${video.id}`,other),[403,404]);await assert.rejects(execute('posts_get',{id:post.id},other),(error:any)=>[403,404].includes(error.status));
+  await approve(post.moderationId);assert.equal((await execute('posts_get',{id:post.id},other)).media[0].mime,'video/mp4');
 });
 
 test('approved video streams byte ranges, suffixes, full bodies and bodyless HEAD',async()=>{
   const video=await upload();await publish(video.id,true);
-  const full=await request(`media/${video.id}`);assert.equal(full.status,200);assert.equal(full.headers.get('content-type'),'video/mp4');
+  for(const method of ['GET','HEAD'])for(const headers of [{},{Range:'bytes=0-7'}] as Record<string,string>[])await denied(await request(`media/${video.id}`,undefined,method,headers),[401]);
+  const full=await request(`media/${video.id}`,other);assert.equal(full.status,200);assert.equal(full.headers.get('content-type'),'video/mp4');
   assert.equal(full.headers.get('accept-ranges'),'bytes');assert.equal(full.headers.get('content-length'),String(mp4.length));assert.match(full.headers.get('cache-control')||'',/no-store/);
   assert.deepEqual(Buffer.from(await full.arrayBuffer()),mp4);
   for(const [range,start,end] of [['bytes=0-7',0,7],['bytes=8-',8,mp4.length-1],['bytes=-5',mp4.length-5,mp4.length-1],['bytes=0-9999',0,mp4.length-1]] as const) {
-    const response=await request(`media/${video.id}`,undefined,'GET',{Range:range});assert.equal(response.status,206,range);
+    const response=await request(`media/${video.id}`,other,'GET',{Range:range});assert.equal(response.status,206,range);
     assert.equal(response.headers.get('content-range'),`bytes ${start}-${end}/${mp4.length}`);assert.equal(response.headers.get('content-length'),String(end-start+1));
     assert.deepEqual(Buffer.from(await response.arrayBuffer()),mp4.subarray(start,end+1));
   }
   for(const range of [`bytes=${mp4.length}-`,'bytes=9-2','bytes=-0','bytes=0-1,4-5','bytes=9007199254740993-']) {
-    const response=await request(`media/${video.id}`,undefined,'GET',{Range:range});assert.equal(response.status,416,range);assert.equal(response.headers.get('content-range'),`bytes */${mp4.length}`);
+    const response=await request(`media/${video.id}`,other,'GET',{Range:range});assert.equal(response.status,416,range);assert.equal(response.headers.get('content-range'),`bytes */${mp4.length}`);
   }
-  const head=await request(`media/${video.id}`,undefined,'HEAD');assert.equal(head.status,200);assert.equal(head.headers.get('content-length'),String(mp4.length));assert.equal((await head.arrayBuffer()).byteLength,0);
-  const rangedHead=await request(`media/${video.id}`,undefined,'HEAD',{Range:'bytes=0-7'});assert.equal(rangedHead.status,206);
+  const head=await request(`media/${video.id}`,other,'HEAD');assert.equal(head.status,200);assert.equal(head.headers.get('content-length'),String(mp4.length));assert.equal((await head.arrayBuffer()).byteLength,0);
+  const rangedHead=await request(`media/${video.id}`,other,'HEAD',{Range:'bytes=0-7'});assert.equal(rangedHead.status,206);
   assert.equal(rangedHead.headers.get('content-range'),`bytes 0-7/${mp4.length}`);assert.equal(rangedHead.headers.get('content-length'),'8');assert.equal((await rangedHead.arrayBuffer()).byteLength,0);
 });
 
@@ -198,13 +199,13 @@ test('hide and delete immediately revoke video GET, HEAD, ranges and quote-chain
   const video=await upload(),post=await publish(video.id,true);
   const quote=await execute('posts_create',{body:'视频转发测试',originalId:post.id},other);await approve(quote.moderationId);
   await execute('admin_content_moderate',{targetType:'post',targetId:post.id,decision:'hide'},admin);
-  for(const actor of [undefined,author,other,admin])for(const method of ['GET','HEAD'])await denied(await request(`media/${video.id}`,actor,method,{Range:'bytes=0-7'}),[403,404]);
-  await assert.rejects(execute('posts_get',{id:quote.id},{}));
+  for(const actor of [undefined,author,other,admin])for(const method of ['GET','HEAD'])await denied(await request(`media/${video.id}`,actor,method,{Range:'bytes=0-7'}),actor?[403,404]:[401]);
+  await assert.rejects(execute('posts_get',{id:quote.id},other),(error:any)=>[403,404].includes(error.status));
   const review=await request(`moderation/media/${video.id}`,admin);assert.equal(review.status,200);await review.arrayBuffer();
   await execute('admin_content_moderate',{targetType:'post',targetId:post.id,decision:'restore'},admin);
-  assert.equal((await request(`media/${video.id}`,undefined,'HEAD')).status,200);
+  assert.equal((await request(`media/${video.id}`,other,'HEAD')).status,200);
   await execute('admin_content_moderate',{targetType:'post',targetId:post.id,decision:'delete'},admin);
-  for(const endpoint of [`media/${video.id}`,`moderation/media/${video.id}`])for(const actor of [undefined,author,admin])for(const method of ['GET','HEAD'])await denied(await request(endpoint,actor,method,{Range:'bytes=0-7'}),[403,404]);
+  for(const endpoint of [`media/${video.id}`,`moderation/media/${video.id}`])for(const actor of [undefined,author,admin])for(const method of ['GET','HEAD'])await denied(await request(endpoint,actor,method,{Range:'bytes=0-7'}),actor?[403,404]:[401,404]);
 });
 
 test('privacy export includes video metadata without storage keys or internal moderation results',async()=>{

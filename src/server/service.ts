@@ -81,7 +81,7 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
   if(!parsed.success) fail(400,parsed.error.issues.map(i=>`${i.path.join('.')}: ${i.message}`).join(';'),'INVALID_INPUT');
   const p=parsed.data as Item;
   await active(a);
-  if(a.grantId && ['posts_list','posts_get','search','communities_list','communities_get','events_list','events_get','profile_get'].includes(action)) scope(a,'content:read');
+  if(['posts_list','posts_get','search'].includes(action) || (a.grantId && ['communities_list','communities_get','events_list','events_get','profile_get'].includes(action))) scope(a,'content:read');
   switch(action) {
     case 'invitations_list': return listInvitations(a);
     case 'invitations_create': return createInvitations({count:p.count,days:p.days,label:p.label},a);

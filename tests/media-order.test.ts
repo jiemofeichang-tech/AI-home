@@ -53,15 +53,15 @@ test('chosen image order survives locking, moderation, background updates and re
   for(const id of [b,c,a])await query("UPDATE media SET status='failed',error='fixture processing unavailable' WHERE id=$1",[id]);
   assert.deepEqual(await query('SELECT id,created_at FROM media WHERE id=ANY($1::text[]) ORDER BY id',[chosen]),createdAtBefore,'Sorting must not rewrite upload times');
   for(let read=0;read<3;read++) {
-    assert.deepEqual(mediaIds(await execute('posts_get',{id:result.id},{})),chosen);
-    assert.deepEqual(mediaIds((await execute('posts_list',{},{})).items.find((post:{id:string})=>post.id===result.id)),chosen);
+    assert.deepEqual(mediaIds(await execute('posts_get',{id:result.id},other)),chosen);
+    assert.deepEqual(mediaIds((await execute('posts_list',{},other)).items.find((post:{id:string})=>post.id===result.id)),chosen);
   }
   assert.deepEqual((await execute('admin_content_list',{targetType:'post',status:'visible',q:'MEDIA-ORDER-CHOSEN'},admin)).items[0].images,chosen);
   const repeat=await execute('posts_create',{body:'MEDIA-ORDER-CHOSEN',mediaIds:chosen,idempotencyKey:`order-${suffix}`},author);
   assert.equal(repeat.id,result.id,'Request retries reuse the post and its saved order');
   await assert.rejects(execute('posts_create',{body:'MEDIA-ORDER-CHOSEN',mediaIds:[b,a,c],idempotencyKey:`order-${suffix}`},author),/幂等键/);
   await query("UPDATE media SET moderation_status='rejected' WHERE id=$1",[a]);
-  assert.deepEqual(mediaIds(await execute('posts_get',{id:result.id},{})),[c,b],'Filtering a hidden image must preserve the order of the remaining images');
+  assert.deepEqual(mediaIds(await execute('posts_get',{id:result.id},other)),[c,b],'Filtering a hidden image must preserve the order of the remaining images');
 });
 
 test('legacy posts use upload time with a deterministic ID tie-breaker and old writers remain compatible',async()=>{
@@ -70,7 +70,7 @@ test('legacy posts use upload time with a deterministic ID tie-breaker and old w
   const a=await image(`a-${suffix}`,'2026-01-02T00:00:00Z',author,postId);
   const b=await image(`b-${suffix}`,'2026-01-01T00:00:00Z',author,postId);
   for(const id of [b,a,c])await query("UPDATE media SET status='ready' WHERE id=$1",[id]);
-  assert.deepEqual(mediaIds(await execute('posts_get',{id:postId},{})),[b,a,c]);
+  assert.deepEqual(mediaIds(await execute('posts_get',{id:postId},other)),[b,a,c]);
   assert.ok((await query('SELECT position FROM media WHERE post_id=$1',[postId])).every(row=>row.position===null));
 });
 
@@ -89,5 +89,5 @@ test('database rejects duplicate or out-of-range positions without changing the 
   const result=await execute('posts_create',{body:'Position integrity',mediaIds:[second,first]},author);await approve(result);
   await assert.rejects(query('UPDATE media SET position=0 WHERE id=$1',[first]),(error:{code:string})=>error.code==='23505');
   for(const position of [-1,9])await assert.rejects(query('UPDATE media SET position=$2 WHERE id=$1',[first,position]),(error:{code:string})=>error.code==='23514');
-  assert.deepEqual(mediaIds(await execute('posts_get',{id:result.id},{})),[second,first]);
+  assert.deepEqual(mediaIds(await execute('posts_get',{id:result.id},other)),[second,first]);
 });

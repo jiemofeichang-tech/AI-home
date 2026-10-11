@@ -59,7 +59,7 @@ async function upload(actor:Actor=author) {
 }
 async function approve(id:string){return moderation.moderationDecide(admin,{id,decision:'approve',reason:'人工核对资料和原图通过'});}
 async function caseFor(targetId:string,type='post'){return (await query('SELECT * FROM moderation_cases WHERE target_type=$1 AND target_id=$2',[type,targetId]))[0];}
-async function publicImage(id:string,expected=200){const response=await request(`media/${id}`);assert.equal(response.status,expected);return response;}
+async function publicImage(id:string,expected=200){const response=await request(`media/${id}`,other);assert.equal(response.status,expected);return response;}
 function cloudAnswer(action:string|null) {
   return Response.json({Code:200,Data:action==='DescribeUploadToken'?{AccessKeyId:'temporary-test-id',AccessKeySecret:'temporary-test-secret',SecurityToken:'temporary-test-token',BucketName:'moderation-test-bucket',FileNamePrefix:'admin-contents/',OssInternetEndPoint:'https://oss-cn-shanghai.aliyuncs.com',Expiration:Math.floor(Date.now()/1000)+3600}:{RiskLevel:'none',Result:[{Label:'nonLabel'}]}});
 }
@@ -94,7 +94,7 @@ async function comment(postId:string,approved=true) {
 async function manage(targetId:string,decision:'hide'|'restore'|'delete',targetType:'post'|'comment'='post') {
   return execute('admin_content_moderate',{targetId,targetType,decision},admin);
 }
-async function absent(id:string,actor:Actor={}) {await assert.rejects(execute('posts_get',{id},actor),(error:any)=>[403,404].includes(error.status));}
+async function absent(id:string,actor:Actor=other) {await assert.rejects(execute('posts_get',{id},actor),(error:any)=>[403,404].includes(error.status));}
 
 test('only active human platform administrators can list or manage any content',async()=>{
   const p=await post('管理权限测试');
@@ -133,34 +133,36 @@ test('hidden posts disappear from feeds, search, quote chains, media and owner p
   const quote=await post('隐藏链路第一转发',other,{originalId:p.id}),nested=await post('隐藏链路第二转发',author,{originalId:quote.id});
   const reply=await comment(p.id);
   for(const id of [p.id,quote.id,nested.id])await worker.indexPost(id);
-  assert.equal((await request(`media/${image.id}`)).status,200);
+  assert.equal((await request(`media/${image.id}`,other)).status,200);
+  assert.equal((await request(`media/${image.id}`)).status,401);
   assert.ok((await execute('notifications_list',{},author)).items.some((item:any)=>item.comment_id===reply.id));
   await manage(p.id,'hide');
   for(const id of [p.id,quote.id,nested.id])await absent(id);
-  assert.equal((await request(`media/${image.id}`)).status,404);
+  assert.equal((await request(`media/${image.id}`,other)).status,404);
+  assert.equal((await request(`media/${image.id}`)).status,401);
   assert.equal((await request(`media/${image.id}`,author)).status,404);
   assert.equal((await request(`moderation/media/${image.id}`,admin)).status,200);
-  for(const action of ['posts_list','search'] as const){const list=await execute(action,action==='search'?{q:'隐藏链路'}:{},{});assert.ok(!(list.items||list.posts).some((item:any)=>[p.id,quote.id,nested.id].includes(item.id)));}
+  for(const action of ['posts_list','search'] as const){const list=await execute(action,action==='search'?{q:'隐藏链路'}:{},other);assert.ok(!(list.items||list.posts).some((item:any)=>[p.id,quote.id,nested.id].includes(item.id)));}
   assert.ok(!(await execute('notifications_list',{},author)).items.some((item:any)=>item.comment_id===reply.id));
   const mine=await moderation.moderationList(other,{mine:true});for(const item of mine.items.filter(item=>[quote.id,reply.id].includes(item.targetId))){assert.ok(item.hiddenAt);assert.ok(item.unavailable);assert.match(item.userReason,/隐藏/);}
   const adminReply=(await execute('admin_content_list',{targetType:'comment'},admin)).items.find((item:any)=>item.id===reply.id);assert.ok(adminReply.postHiddenAt);assert.ok(adminReply.unavailable);
   const indexJobs=await query("SELECT target_id FROM jobs WHERE kind='index' AND status='pending' AND target_id=ANY($1::text[])",[[p.id,quote.id,nested.id]]);assert.equal(indexJobs.length,3);
   for(const id of [p.id,quote.id,nested.id]){await worker.indexPost(id);assert.equal(indexed.has(id),false);}
   const exported=await privacy.exportOwnData(author);assert.ok(exported.posts.find(item=>item.id===p.id)?.hidden_at);assert.ok(!JSON.stringify(exported).includes('admin_content_hide'));
-  await manage(p.id,'restore');await execute('posts_get',{id:nested.id},{});assert.equal((await request(`media/${image.id}`)).status,200);
-  await manage(quote.id,'hide');assert.equal((await execute('posts_get',{id:p.id},{})).repostCount,0);
+  await manage(p.id,'restore');await execute('posts_get',{id:nested.id},other);assert.equal((await request(`media/${image.id}`,other)).status,200);
+  await manage(quote.id,'hide');assert.equal((await execute('posts_get',{id:p.id},other)).repostCount,0);
 });
 
 test('comments hide independently, remove their own notification and can restore without approving pending replies',async()=>{
   const p=await post('评论管理测试'),first=await comment(p.id),second=await comment(p.id);
   await manage(first.id,'hide','comment');
-  const view=await execute('posts_get',{id:p.id},{});assert.deepEqual(view.comments.map((item:any)=>item.id),[second.id]);
+  const view=await execute('posts_get',{id:p.id},other);assert.deepEqual(view.comments.map((item:any)=>item.id),[second.id]);
   const notifications=(await execute('notifications_list',{},author)).items;assert.ok(!notifications.some((item:any)=>item.comment_id===first.id));assert.ok(notifications.some((item:any)=>item.comment_id===second.id));
-  await manage(first.id,'restore','comment');assert.equal((await execute('posts_get',{id:p.id},{})).comments.length,2);
+  await manage(first.id,'restore','comment');assert.equal((await execute('posts_get',{id:p.id},other)).comments.length,2);
   const pending=await comment(p.id,false);await manage(pending.id,'hide','comment');await manage(pending.id,'restore','comment');
-  assert.equal((await query('SELECT moderation_status FROM comments WHERE id=$1',[pending.id]))[0].moderation_status,'pending');assert.equal((await execute('posts_get',{id:p.id},{})).comments.length,2);
+  assert.equal((await query('SELECT moderation_status FROM comments WHERE id=$1',[pending.id]))[0].moderation_status,'pending');assert.equal((await execute('posts_get',{id:p.id},other)).comments.length,2);
   await manage(first.id,'delete','comment');await assert.rejects(manage(first.id,'restore','comment'));await assert.rejects(approve(first.moderationId));
-  assert.equal((await execute('posts_get',{id:p.id},{})).comments.length,1);
+  assert.equal((await execute('posts_get',{id:p.id},other)).comments.length,1);
 });
 
 test('restoring reads the latest safety verdict and legacy content does not default to approved',async()=>{
@@ -171,7 +173,7 @@ test('restoring reads the latest safety verdict and legacy content does not defa
   }
   const legacy=randomUUID();await query("INSERT INTO posts(id,author_id,body,moderation_status) VALUES($1,$2,'legacy rejected','rejected')",[legacy,author.userId]);
   await manage(legacy,'hide');assert.equal((await caseFor(legacy)).status,'rejected');await manage(legacy,'restore');await absent(legacy);
-  const p=await post('当前审核结果',author,{},false);await manage(p.id,'hide');await approve(p.moderationId);await absent(p.id);await manage(p.id,'restore');await execute('posts_get',{id:p.id},{});
+  const p=await post('当前审核结果',author,{},false);await manage(p.id,'hide');await approve(p.moderationId);await absent(p.id);await manage(p.id,'restore');await execute('posts_get',{id:p.id},other);
 });
 
 test('late automated approval, explicit retry and old-worker writes cannot resurrect hidden content',async()=>{
@@ -185,14 +187,14 @@ test('late automated approval, explicit retry and old-worker writes cannot resur
   await delayedApproval(reply.moderationId,()=>manage(reply.id,'hide','comment'));
   await query("UPDATE comments SET moderation_status='approved' WHERE id=$1",[reply.id]);
   assert.equal((await query('SELECT moderation_status FROM comments WHERE id=$1',[reply.id]))[0].moderation_status,'review');
-  assert.ok(!(await execute('posts_get',{id:parent.id},{})).comments.some((item:any)=>item.id===reply.id));assert.equal((await query('SELECT 1 FROM notifications WHERE comment_id=$1',[reply.id])).length,0);
-  await manage(reply.id,'restore','comment');assert.ok((await execute('posts_get',{id:parent.id},{})).comments.some((item:any)=>item.id===reply.id));
+  assert.ok(!(await execute('posts_get',{id:parent.id},other)).comments.some((item:any)=>item.id===reply.id));assert.equal((await query('SELECT 1 FROM notifications WHERE comment_id=$1',[reply.id])).length,0);
+  await manage(reply.id,'restore','comment');assert.ok((await execute('posts_get',{id:parent.id},other)).comments.some((item:any)=>item.id===reply.id));
 });
 
 test('deletion is terminal even during a provider request and clears jobs and image access',async()=>{
   const image=await upload(),p=await post('删除并发审核',author,{mediaIds:[image.id],links:['https://example.com/test']},false);
   await delayedApproval(p.moderationId,()=>manage(p.id,'delete'));await absent(p.id);await assert.rejects(manage(p.id,'restore'));await assert.rejects(approve(p.moderationId));await assert.rejects(moderation.moderationRetry(admin,{id:p.moderationId}));
-  assert.equal((await caseFor(p.id)).status,'deleted');assert.equal((await request(`media/${image.id}`)).status,404);assert.equal((await request(`moderation/media/${image.id}`,admin)).status,404);
+  assert.equal((await caseFor(p.id)).status,'deleted');assert.equal((await request(`media/${image.id}`,other)).status,404);assert.equal((await request(`moderation/media/${image.id}`,admin)).status,404);
   const list=await execute('admin_content_list',{status:'deleted'},admin);assert.deepEqual(list.items.find((item:any)=>item.id===p.id).images,[]);
   assert.equal((await query("SELECT count(*)::int AS n FROM jobs WHERE status IN ('processing','pending') AND ((kind='moderation' AND target_id=$1) OR (kind='link' AND target_id IN (SELECT id FROM link_resources WHERE post_id=$2)))",[p.moderationId,p.id]))[0].n,0);
   await manage(p.id,'delete');

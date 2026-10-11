@@ -7,7 +7,7 @@ import EmbeddedPostgres from 'embedded-postgres';
 import type pg from 'pg';
 
 const videoId='7356906132482428172',videoUrl=`https://www.douyin.com/video/${videoId}`;
-const author={userId:'douyin-author'},admin={userId:'douyin-admin'};
+const author={userId:'douyin-author'},other={userId:'douyin-other'},admin={userId:'douyin-admin'};
 let engine:EmbeddedPostgres,pool:pg.Pool;
 let query:typeof import('../src/server/db').query,execute:typeof import('../src/server/service').execute;
 let processLink:typeof import('../src/server/worker').processLink,moderation:typeof import('../src/server/moderation');
@@ -24,7 +24,7 @@ before(async()=>{
   await engine.initialise();await engine.start();
   ({pool,query}=await import('../src/server/db'));await (await import('../scripts/migrate')).migrate();
   ({execute}=await import('../src/server/service'));({processLink}=await import('../src/server/worker'));moderation=await import('../src/server/moderation');
-  for(const actor of [author,admin]){
+  for(const actor of [author,other,admin]){
     await query(`INSERT INTO "user"(id,name,email,"emailVerified","createdAt","updatedAt") VALUES($1,$1,$2,true,now(),now())`,[actor.userId,`${actor.userId}@example.invalid`]);
     await query('INSERT INTO profiles(user_id,handle,role) VALUES($1,$1,$2)',[actor.userId,actor===admin?'admin':'member']);
   }
@@ -50,9 +50,10 @@ test('a parsed player stays private until derived review passes, while the origi
   const post=await fixture();await processLink(post.linkId,fetchVideo);
   const link=await resource(post.linkId);assert.equal(link.metadata.douyinEmbed.videoId,videoId);
   assert.equal(link.derivation_status,'pending');assert.equal(link.moderation_status,'approved');
-  assert.deepEqual((await execute('posts_get',{id:post.id},{})).links[0].metadata,{});
+  assert.deepEqual((await execute('posts_get',{id:post.id},other)).links[0].metadata,{});
+  await assert.rejects(execute('posts_get',{id:post.id},{}),{status:401});
   await approvePreview(post.linkId);
-  const publicLink=(await execute('posts_get',{id:post.id},{})).links[0];
+  const publicLink=(await execute('posts_get',{id:post.id},other)).links[0];
   assert.deepEqual(publicLink.metadata.douyinEmbed,{videoId,width:720,height:1280});
   assert.ok(!JSON.stringify(publicLink.metadata).includes('<iframe'));
 });
@@ -61,7 +62,7 @@ test('short shares use the safely resolved video ID and keep their original exte
   const short='https://v.douyin.com/test-share/';const post=await fixture(short);const requested:string[]=[];
   await processLink(post.linkId,async url=>{requested.push(url);return url===short?{url:`https://www.iesdouyin.com/share/video/${videoId}/`,headers:{},body:'<title>技术分享</title>'}:fetchVideo(url);});
   assert.equal(requested[0],short);assert.ok(requested.some(url=>url.includes(`video_id=${videoId}`)));
-  await approvePreview(post.linkId);const link=(await execute('posts_get',{id:post.id},{})).links[0];
+  await approvePreview(post.linkId);const link=(await execute('posts_get',{id:post.id},other)).links[0];
   assert.equal(link.url,short);assert.equal(link.metadata.douyinEmbed.videoId,videoId);
 });
 
@@ -69,7 +70,7 @@ test('non-public videos never expose a player and do not change the original pos
   const post=await fixture();
   await processLink(post.linkId,async url=>url.startsWith('https://open.douyin.com/api/')?{url,headers:{},body:JSON.stringify({err_no:28003004,err_msg:'非公开视频'})}:fetchVideo(url));
   assert.equal((await resource(post.linkId)).metadata.douyinEmbed,undefined);
-  const view=await execute('posts_get',{id:post.id},{});assert.equal(view.moderation_status,'approved');assert.equal(view.links[0].url,videoUrl);
+  const view=await execute('posts_get',{id:post.id},other);assert.equal(view.moderation_status,'approved');assert.equal(view.links[0].url,videoUrl);
 });
 
 test('an in-flight player response cannot overwrite a subsequent human post approval',async()=>{
@@ -79,18 +80,18 @@ test('an in-flight player response cannot overwrite a subsequent human post appr
   await started;await moderation.moderationDecide(admin,{id:post.moderationId,decision:'approve',reason:'人工核对原始链接'});
   const before=await resource(post.linkId);release();await running;
   const after=await resource(post.linkId);assert.deepEqual(after.metadata,before.metadata);assert.equal(after.derivation_status,before.derivation_status);
-  assert.equal((await execute('posts_get',{id:post.id},{})).links[0].metadata.douyinEmbed,undefined);
+  assert.equal((await execute('posts_get',{id:post.id},other)).links[0].metadata.douyinEmbed,undefined);
 });
 
 test('hidden and deleted posts cannot expose an approved player through detail or feeds',async()=>{
   const post=await fixture();await processLink(post.linkId,fetchVideo);await approvePreview(post.linkId);
   await execute('admin_content_moderate',{targetType:'post',targetId:post.id,decision:'hide'},admin);
-  await assert.rejects(execute('posts_get',{id:post.id},{}));
-  assert.ok(!(await execute('posts_list',{},{})).items.some((item:any)=>item.id===post.id));
+  await assert.rejects(execute('posts_get',{id:post.id},other),(error:any)=>[403,404].includes(error.status));
+  assert.ok(!(await execute('posts_list',{},other)).items.some((item:any)=>item.id===post.id));
   await execute('admin_content_moderate',{targetType:'post',targetId:post.id,decision:'restore'},admin);
-  assert.equal((await execute('posts_get',{id:post.id},{})).links[0].metadata.douyinEmbed.videoId,videoId);
+  assert.equal((await execute('posts_get',{id:post.id},other)).links[0].metadata.douyinEmbed.videoId,videoId);
   await execute('admin_content_moderate',{targetType:'post',targetId:post.id,decision:'delete'},admin);
-  await assert.rejects(execute('posts_get',{id:post.id},{}));
+  await assert.rejects(execute('posts_get',{id:post.id},other),(error:any)=>[403,404].includes(error.status));
   let fetched=false;await processLink(post.linkId,async url=>{fetched=true;return fetchVideo(url);});assert.equal(fetched,false);
 });
 
@@ -102,7 +103,7 @@ test('authors can distinguish retry progress without exposing private job detail
   assert.deepEqual(view.processing,[{id:job.id,kind:'link',target_id:post.linkId,status:'pending',attempts:1}]);
   assert.equal(JSON.stringify(view).includes('private provider diagnostic'),false);
   const grant=await execute('grants_create',{name:'Read public posts',scopes:['content:read'],days:1},author);
-  for(const actor of [{},admin,{...author,grantId:grant.id}]) {
+  for(const actor of [other,admin,{...author,grantId:grant.id}]) {
     const otherView=await execute('posts_get',{id:post.id},actor);
     assert.deepEqual(otherView.processing,[]);
     assert.equal(JSON.stringify(otherView).includes('private provider diagnostic'),false);

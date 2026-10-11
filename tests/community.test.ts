@@ -42,12 +42,12 @@ before(async()=>{
 after(async()=>{if(server)await new Promise<void>(r=>server.close(()=>r()));if(pool)await pool.end();if(engine)await engine.stop();});
 
 test('public/private visibility includes announcements, search, original posts and agent group scope',async()=>{
-  assert.equal((await execute('posts_get',{id:publicPost},{})).body.includes('PUBLIC'),true);
+  assert.equal((await execute('posts_get',{id:publicPost},outsider)).body.includes('PUBLIC'),true);
   await assert.rejects(execute('posts_get',{id:privatePost},outsider),/需要加入社群/);
   assert.equal((await execute('posts_get',{id:privatePost},member)).id,privatePost);
   assert.equal((await execute('posts_get',{id:privatePost},agent)).id,privatePost);
   assert.equal(JSON.stringify(await execute('communities_list',{},{})).includes('ONLY-MEMBERS-SECRET'),false);
-  assert.equal(JSON.stringify(await execute('search',{q:'测试',type:'communities'},{})).includes('ONLY-MEMBERS-SECRET'),false);
+  assert.equal(JSON.stringify(await execute('search',{q:'测试',type:'communities'},outsider)).includes('ONLY-MEMBERS-SECRET'),false);
   assert.equal((await execute('search',{q:'PRIVATE-NEEDLE'},outsider)).posts.length,0);
   await assert.rejects(execute('posts_create',{originalId:privatePost},agent),/私密内容/);
   const short=await execute('grants_create',{name:'limited',scopes:['content:read'],communityIds:[],days:1},owner);
@@ -56,6 +56,77 @@ test('public/private visibility includes announcements, search, original posts a
   await assert.rejects(execute('posts_create',{body:'not allowed'},a),/操作授权/);
   await execute('communities_leave',{id:privateGroup},member);
   await assert.rejects(execute('posts_get',{id:privatePost},member),/需要加入社群/);
+});
+test('post reading requires login across feeds, details, search, action aliases and attached images',async()=>{
+  const {putObject}=await import('../src/server/storage');
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+afo0AAAAASUVORK5CYII=','base64');
+  const marker='LOGIN-REQUIRED-POST-CONTENT',imageId='login-required-image';
+  await putObject(`images/${imageId}.png`,png,'image/png');
+  await query(`INSERT INTO media(id,owner_id,storage_key,mime,bytes,original_name,status) VALUES($1,$2,$3,'image/png',$4,'login-required.png','ready')`,[imageId,owner.userId,`images/${imageId}.png`,png.length]);
+  const post=await execute('posts_create',{body:marker,communityId:publicGroup,mediaIds:[imageId]},owner);
+  const requests:[string,Record<string,unknown>,string][]=[
+    ['posts_list',{},'posts'],
+    ['posts_list',{communityId:publicGroup},`posts?communityId=${publicGroup}`],
+    ['posts_list',{authorId:owner.userId},`posts?authorId=${owner.userId}`],
+    ['posts_get',{id:publicPost},`posts/${publicPost}`],
+    ['posts_get',{id:post.id},`posts/${post.id}`],
+    ['posts_get',{id:privatePost},`posts/${privatePost}`],
+    ...['all','posts','github','communities','events'].map(type=>['search',{q:marker,type},`search?q=${marker}&type=${type}`] as [string,Record<string,unknown>,string]),
+  ];
+  async function unauthorized(response:Response,context:string) {
+    assert.equal(response.status,401,context);
+    assert.match(response.headers.get('cache-control')||'',/no-store/,context);
+    assert.match(response.headers.get('www-authenticate')||'',/^Bearer /,context);
+    const body=await response.text();assert.equal(body.includes(marker),false,context);assert.equal(body.includes('PUBLIC-NEEDLE'),false,context);assert.equal(body.includes('PRIVATE-NEEDLE'),false,context);
+  }
+  for(const [action,input,endpoint] of requests) {
+    await assert.rejects(execute(action,input,{}),(error:any)=>error.status===401,action);
+    await unauthorized(await http(new Request(`${base}/api/v1/${endpoint}`)),endpoint);
+    await unauthorized(await http(new Request(`${base}/api/v1/actions/${action}`,{method:'POST',headers:{Origin:base,'Content-Type':'application/json'},body:JSON.stringify(input)})),`actions/${action}`);
+  }
+  const imageRequests:[string,Record<string,string>][]=[['GET',{}],['HEAD',{}],['GET',{Range:'bytes=0-7'}],['HEAD',{Range:'bytes=0-7'}]];
+  for(const [method,headers] of imageRequests)await unauthorized(await http(new Request(`${base}/api/v1/media/${imageId}`,{method,headers})),`${method} attached image ${headers.Range||''}`);
+
+  const phoneNumber='+8613900000002';
+  async function loginRequest(endpoint:string,body:Record<string,string>) {
+    const response=await auth.handler(new Request(`${base}/api/auth${endpoint}`,{method:'POST',headers:{Origin:base,'Content-Type':'application/json','X-Privacy-Version':PRIVACY_VERSION},body:JSON.stringify(body)}));
+    assert.equal(response.status,200,await response.clone().text());return response;
+  }
+  await loginRequest('/phone-number/send-otp',{phoneNumber});
+  const [otp]=await query('SELECT count FROM usage_counters WHERE key=$1',[`dev-otp:${phoneNumber}`]);
+  const loggedIn=await loginRequest('/phone-number/verify',{phoneNumber,code:String(otp.count).padStart(6,'0')});
+  const cookie=loggedIn.headers.getSetCookie().map((value:string)=>value.split(';')[0]).join('; ');assert.ok(cookie);
+  assert.equal((await actorFromRequest(new Request(`${base}/api/v1/posts`,{headers:{Cookie:cookie}}))).userId,outsider.userId);
+  const allowedRequests=requests.filter(([,input])=>input.id!==privatePost);
+  for(const headers of [{Cookie:cookie},{Authorization:`Bearer ${grant.token}`}] as Record<string,string>[]) {
+    for(const [action,input,endpoint] of allowedRequests) {
+      for(const response of [
+        await http(new Request(`${base}/api/v1/${endpoint}`,{headers})),
+        await http(new Request(`${base}/api/v1/actions/${action}`,{method:'POST',headers:{...headers,Origin:base,'Content-Type':'application/json'},body:JSON.stringify(input)})),
+      ]) {
+        const result=await response.json();assert.equal(response.status,200,JSON.stringify(result));
+        if(action==='posts_get')assert.equal(result.id,input.id);
+        if(action==='posts_list')assert.ok(result.items.some((item:any)=>item.id===post.id));
+        if(action==='search'&&['all','posts'].includes(String(input.type)))assert.ok(result.posts.some((item:any)=>item.id===post.id));
+      }
+    }
+    for(const [method] of imageRequests.slice(0,2)) {
+      const response=await http(new Request(`${base}/api/v1/media/${imageId}`,{method,headers}));
+      assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'private, no-store');assert.equal(response.headers.get('content-type'),'image/png');
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()),method==='HEAD'?Buffer.alloc(0):png);
+    }
+  }
+  assert.equal((await http(new Request(`${base}/api/v1/posts/${privatePost}`,{headers:{Cookie:cookie}}))).status,403,'Login alone must not grant private community access');
+
+  const restricted=await execute('grants_create',{name:'without-content-read',scopes:['posts:write'],days:1},owner);
+  for(const endpoint of ['posts',`posts/${post.id}`,`search?q=${marker}`,`media/${imageId}`]) {
+    const response=await http(new Request(`${base}/api/v1/${endpoint}`,{headers:{Authorization:`Bearer ${restricted.token}`}}));
+    assert.equal(response.status,403,endpoint);
+  }
+  const signOut=await auth.handler(new Request(`${base}/api/auth/sign-out`,{method:'POST',headers:{Origin:base,Cookie:cookie}}));assert.equal(signOut.status,200);
+  await unauthorized(await http(new Request(`${base}/api/v1/posts/${post.id}`,{headers:{Cookie:cookie}})),'signed-out session');
+  const schema=await (await http(new Request(`${base}/api/v1/openapi.json`))).json();
+  for(const endpoint of ['/posts','/posts/{id}','/search'])assert.equal(schema.paths[endpoint].get.security.some((item:any)=>Object.keys(item).length===0),false,endpoint);
 });
 test('permissions are applied before search limits and pagination',async()=>{
   const visible=(await execute('posts_create',{body:'HIDDEN-FLOOD public older result'},owner)).id;
@@ -105,7 +176,7 @@ test('event booking validates contact details, restricts attendee data and cance
     await assert.rejects(execute('events_attendees',{id:event.id},actor),(error:any)=>error.status===status);
   }
   for(const requestHeaders of [undefined,headers,{Authorization:`Bearer ${grant.token}`}]) {
-    for(const endpoint of [`events/${event.id}`,'events',`search?q=${encodeURIComponent('联系资料预约测试')}&type=events`]) {
+    for(const endpoint of [`events/${event.id}`,'events',...(requestHeaders?[`search?q=${encodeURIComponent('联系资料预约测试')}&type=events`]:[])]) {
       const publicResponse=await http(new Request(`${base}/api/v1/${endpoint}`,{headers:requestHeaders}));assert.equal(publicResponse.status,200);
       const result=await publicResponse.json();const events=endpoint.startsWith('search?')?result.events:endpoint==='events'?result.items:[result];assert.ok(events.some((e:any)=>e.id===event.id));
       const body=JSON.stringify(result);assert.equal(body.includes(contact.attendeeName.trim()),false);assert.equal(body.includes(contact.phoneNumber),false);assert.equal(/attendee_name|attendeeName|phone_number|phoneNumber/.test(body),false);
@@ -142,9 +213,9 @@ test('private attachments, OCR and reposts obey live permissions after deletion'
   const derived=await enqueueModeration('media','test-image',owner.userId!);
   await moderationDecide(owner,{id:derived.id,decision:'approve',reason:'测试夹具独立图片识别结果审核通过'});
   await approveFixture(submitted);
-  const unauth=await http(new Request(`${base}/api/v1/media/test-image`));assert.equal(unauth.status,403);
+  const unauth=await http(new Request(`${base}/api/v1/media/test-image`));assert.equal(unauth.status,401);
   const allowed=await http(new Request(`${base}/api/v1/media/test-image`,{headers:{Authorization:`Bearer ${grant.token}`}}));assert.equal(allowed.status,200);assert.equal(allowed.headers.get('cache-control'),'private, no-store');
-  assert.equal((await execute('search',{q:'OCR-SECRET'},{})).posts.length,0);assert.equal((await execute('search',{q:'OCR-SECRET'},agent)).posts[0].id,post);
+  assert.equal((await execute('search',{q:'OCR-SECRET'},outsider)).posts.length,0);assert.equal((await execute('search',{q:'OCR-SECRET'},agent)).posts[0].id,post);
   const repost=(await execute('posts_create',{originalId:post,communityId:privateGroup},agent)).id;
   await execute('posts_delete',{id:post},owner);await assert.rejects(execute('posts_get',{id:repost},agent),/已被删除/);
   assert.equal((await http(new Request(`${base}/api/v1/media/test-image`,{headers:{Authorization:`Bearer ${grant.token}`}}))).status,404);
@@ -190,7 +261,7 @@ test('link worker refuses private GitHub data and recovers after a retry',async(
     globalThis.fetch=async()=>{requests++;return Response.json({private:true,visibility:'private',description:'PRIVATE-REPOSITORY-SECRET'});};
     await processJob(job.id);assert.equal(requests,1,'Private README must never be requested');
     const [failed]=await query('SELECT status,title,description,content FROM link_resources WHERE id=$1',[link.id]);assert.equal(failed.status,'failed');assert.equal(JSON.stringify(failed).includes('PRIVATE-REPOSITORY-SECRET'),false);
-    await assert.rejects(execute('posts_get',{id:post.id},owner));assert.equal(JSON.stringify(await execute('posts_list',{},{})).includes('PRIVATE-REPOSITORY-SECRET'),false);
+    await assert.rejects(execute('posts_get',{id:post.id},owner));assert.equal(JSON.stringify(await execute('posts_list',{},outsider)).includes('PRIVATE-REPOSITORY-SECRET'),false);
     await query("UPDATE jobs SET status='failed' WHERE id=$1",[job.id]);await execute('jobs_retry',{id:job.id},owner);
     globalThis.fetch=async input=>String(input).endsWith('/readme')?new Response('PUBLIC-README fixture'):Response.json({private:false,visibility:'public',full_name:'test-owner/public-fixture',description:'Public description',language:'TypeScript'});
     await processJob(job.id);
@@ -264,13 +335,23 @@ test('OAuth authorization code + PKCE binds scopes, audience, grant and revocati
   if(token.refresh_token){const refresh=new URLSearchParams({grant_type:'refresh_token',client_id:client.client_id,refresh_token:token.refresh_token,resource:`${base}/mcp`});response=await authRequest('/oauth2/token','POST',refresh.toString(),undefined,true);assert.ok(response.status>=400);}
 });
 test('portable backup restores records and files to a separate PostgreSQL database',async()=>{
-  const {createBackup,restoreBackup}=await import('../src/server/backup');const directory=path.join(root,'backup');await createBackup(directory,pool);
+  const {createBackup,restoreBackup}=await import('../src/server/backup');const {getObject}=await import('../src/server/storage');
+  const mediaBefore=await query('SELECT id,post_id,storage_key,mime,bytes FROM media ORDER BY id');
+  const expectedMediaCount=mediaBefore.length,originalObjects=new Map<string,Buffer>();
+  for(const media of mediaBefore)originalObjects.set(media.storage_key,await getObject(media.storage_key));
+  assert.ok(originalObjects.has('images/test.png'),'The original attachment fixture must still exist before backup');
+  const directory=path.join(root,'backup');await createBackup(directory,pool);
   await engine.createDatabase('restored');const target=new pg.Pool({connectionString:'postgresql://postgres:test-password@127.0.0.1:54331/restored'});
   const {getMigrations}=await import('better-auth/db/migration');await (await getMigrations({...auth.options,database:target})).runMigrations();
   for(const file of (await readdir('migrations')).filter(f=>f.endsWith('.sql')).sort())await target.query(await readFile(path.join('migrations',file),'utf8'));
   await target.query('CREATE TABLE schema_migrations(name text PRIMARY KEY,applied_at timestamptz DEFAULT now())');
   const restoredObjects=new Map<string,Buffer>();const result=await restoreBackup(directory,target,async(key,data)=>{restoredObjects.set(key,data);});
-  assert.equal((await target.query('SELECT count(*)::int AS n FROM "user"')).rows[0].n,100);assert.equal(result.objects,1);assert.equal(restoredObjects.size,1);assert.equal((await target.query('SELECT count(*)::int AS n FROM agent_grants')).rows[0].n,(await query('SELECT count(*)::int AS n FROM agent_grants'))[0].n);
+  assert.equal((await target.query('SELECT count(*)::int AS n FROM "user"')).rows[0].n,100);assert.equal(result.objects,expectedMediaCount);assert.equal(restoredObjects.size,originalObjects.size);assert.equal((await target.query('SELECT count(*)::int AS n FROM agent_grants')).rows[0].n,(await query('SELECT count(*)::int AS n FROM agent_grants'))[0].n);
+  assert.deepEqual((await target.query('SELECT id,post_id,storage_key,mime,bytes FROM media ORDER BY id')).rows,mediaBefore);
+  for(const [key,bytes] of originalObjects) {
+    assert.deepEqual(restoredObjects.get(key),bytes,`Restored attachment ${key} must retain its original bytes`);
+    assert.deepEqual(await getObject(key),bytes,`Source attachment ${key} must remain present after backup and restore`);
+  }
   assert.deepEqual((await target.query('SELECT event_id,user_id,attendee_name,phone_number FROM registrations ORDER BY event_id,user_id')).rows,await query('SELECT event_id,user_id,attendee_name,phone_number FROM registrations ORDER BY event_id,user_id'));
   await assert.rejects(restoreBackup(directory,target),/not empty/);await writeFile('test-results/restore.json',JSON.stringify({...result,users:100,verified:true},null,2));await target.end();
 });
