@@ -125,7 +125,7 @@ export async function handleApi(request:Request) {
           if(request.signal.aborted)fail(400,'视频上传已取消');
           const limit=Number(process.env.USER_DAILY_VIDEO_LIMIT||5);
           if(!Number.isSafeInteger(limit)||limit<1)throw new Error('USER_DAILY_VIDEO_LIMIT must be a positive integer');
-          await consumeQuota(`upload-video:${actor.userId}:${new Date().toISOString().slice(0,10)}`,limit);
+          await consumeQuota(`upload-video:${actor.userId}:${new Date().toISOString().slice(0,10)}`,limit,`今天上传的视频已达上限（每人每天 ${limit} 个），请在北京时间早上 8 点后再试`);
           await transaction(async client=>{
             await active(actor,client);
             if(request.signal.aborted)fail(400,'视频上传已取消');
@@ -144,7 +144,8 @@ export async function handleApi(request:Request) {
         const form=await readImageUploadForm(request);const file=form.get('file');if(!(file instanceof File)||file.size>10*1024*1024) fail(400,'请上传不超过 10 MB 的图片');
         const original=Buffer.from(await file.arrayBuffer());const mime=imageMime(original);if(!mime) fail(400,'仅支持 PNG、JPG、WebP 和 GIF 图片');
         const bytes=await stripImageMetadata(original);const aiConsent=form.get('aiConsent')==='true';
-        await consumeQuota(`upload:${actor.userId}:${new Date().toISOString().slice(0,10)}`,Number(process.env.USER_DAILY_IMAGE_LIMIT||20));
+        const imageLimit=Number(process.env.USER_DAILY_IMAGE_LIMIT||20);
+        await consumeQuota(`upload:${actor.userId}:${new Date().toISOString().slice(0,10)}`,imageLimit,`今天上传的图片已达上限（每人每天 ${imageLimit} 张），请在北京时间早上 8 点后再试`);
         const id=randomUUID();const ext=mime==='image/jpeg'?'jpg':mime.split('/')[1];const key=`images/${id}.${ext}`;
         let objectAttempted=false;
         try{await transaction(async client=>{

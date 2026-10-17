@@ -1,4 +1,4 @@
-import { betterAuth, type BetterAuthPlugin } from 'better-auth';
+import { APIError, betterAuth, type BetterAuthPlugin } from 'better-auth';
 import { jwt, phoneNumber } from 'better-auth/plugins';
 import { createAuthClient } from 'better-auth/client';
 import { oauthProvider, extendOAuthProvider } from '@better-auth/oauth-provider';
@@ -9,11 +9,21 @@ import { sendSms } from './providers';
 import { SMS_OTP_LENGTH,SMS_OTP_TTL_SECONDS } from './sms';
 import { digest,ensureProfile } from './service';
 import { active } from './permissions';
-import { fail,scopes,type Actor } from '../shared/contracts';
+import { AppError,fail,scopes,type Actor } from '../shared/contracts';
 import { invitationAdmission } from './invitation-auth';
+import { AUTH_RATE_LIMIT,OTP_ALLOWED_ATTEMPTS,OTP_RATE_LIMIT,localizeAuthResponse } from './auth-messages';
 import { PRIVACY_VERSION } from '../shared/privacy';
 
 validateProduction();
+/** Better Auth only returns APIError details; any other error becomes an empty 500. */
+async function deliverOtp(phoneNumber:string,code:string) {
+  try {await sendSms(phoneNumber,code);}
+  catch(error) {
+    if(error instanceof AppError)throw new APIError(error.status===429?'TOO_MANY_REQUESTS':'BAD_REQUEST',{code:error.code,message:error.message});
+    console.error('OTP delivery failed:',error instanceof Error?error.message:error);
+    throw new APIError('SERVICE_UNAVAILABLE',{code:'SMS_UNAVAILABLE',message:'验证码暂时无法发送，请稍后重试'});
+  }
+}
 const grantBinding:BetterAuthPlugin={
   id:'community-grant-binding',
   init(ctx) {
@@ -27,15 +37,20 @@ const grantBinding:BetterAuthPlugin={
     });
   }
 };
-function createAuth(){return betterAuth({
+function createAuth(){
+  const instance=createBetterAuth();const handler=instance.handler;
+  instance.handler=async(request:Request)=>localizeAuthResponse(request,await handler(request));
+  return instance;
+}
+function createBetterAuth(){return betterAuth({
   appName:'AI 社区',baseURL:config.url,basePath:'/api/auth',secret:config.secret||'build-only-not-valid-for-production-secret',database:pool,
   trustedOrigins:[config.url],
   advanced:{database:{validateSchema:process.env.NEXT_PHASE!=='phase-production-build'},ipAddress:{ipAddressHeaders:process.env.AUTH_IP_HEADER?[process.env.AUTH_IP_HEADER]:[]}},
-  rateLimit:{enabled:true,storage:'database',window:60,max:100},
+  rateLimit:{enabled:true,storage:'database',...AUTH_RATE_LIMIT,customRules:{'/phone-number/*':OTP_RATE_LIMIT}},
   session:{cookieCache:{enabled:false}},
   user:{deleteUser:{enabled:false}},
   plugins:[
-    phoneNumber({callbackOnVerification:async ({user})=>{await query('UPDATE profiles SET privacy_version=$2,privacy_accepted_at=now() WHERE user_id=$1 AND deleted_at IS NULL',[user.id,PRIVACY_VERSION]);},sendOTP:async ({phoneNumber,code})=>sendSms(phoneNumber,code),phoneNumberValidator:n=>/^\+86[1][3-9]\d{9}$/.test(n),otpLength:SMS_OTP_LENGTH,expiresIn:SMS_OTP_TTL_SECONDS,allowedAttempts:5,signUpOnVerification:{getTempEmail:n=>`${digest(n).slice(0,24)}@phone.invalid`,getTempName:()=>`新朋友${Math.floor(Math.random()*10000).toString().padStart(4,'0')}`}}),
+    phoneNumber({callbackOnVerification:async ({user})=>{await query('UPDATE profiles SET privacy_version=$2,privacy_accepted_at=now() WHERE user_id=$1 AND deleted_at IS NULL',[user.id,PRIVACY_VERSION]);},sendOTP:async ({phoneNumber,code})=>deliverOtp(phoneNumber,code),phoneNumberValidator:n=>/^\+86[1][3-9]\d{9}$/.test(n),otpLength:SMS_OTP_LENGTH,expiresIn:SMS_OTP_TTL_SECONDS,allowedAttempts:OTP_ALLOWED_ATTEMPTS,signUpOnVerification:{getTempEmail:n=>`${digest(n).slice(0,24)}@phone.invalid`,getTempName:()=>`新朋友${Math.floor(Math.random()*10000).toString().padStart(4,'0')}`}}),
     invitationAdmission(),
     jwt({jwt:{definePayload:()=>({})}}),
     oauthProvider({loginPage:'/login',consentPage:'/consent',scopes:['openid','profile','offline_access',...scopes],grantTypes:['authorization_code','refresh_token'],allowDynamicClientRegistration:true,allowUnauthenticatedClientRegistration:true,resources:[`${config.url}/api/v1`,`${config.url}/mcp`],clientRegistrationDefaultResources:[`${config.url}/api/v1`,`${config.url}/mcp`]}),
