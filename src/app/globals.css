@@ -379,6 +379,7 @@ a.quote:hover{border-color:var(--line-strong);border-left-color:var(--brand)}
 .phone-input>input,.code-input>input{border:0;box-shadow:none!important;flex:1;width:100%;font-size:14px}
 .code-input>button{white-space:nowrap;font-size:13px;font-weight:600;color:var(--brand-ink);padding:10px 14px;border-left:1px solid var(--line)}
 .login-note{font-size:12px;color:var(--faint);text-align:center;margin-top:18px}
+.invite-toggle{display:block;margin:-6px 0 4px;padding:4px 0;font-weight:500}
 .dev-code{background:var(--brand-soft);border:1px dashed var(--brand-soft-strong);border-radius:10px;padding:12px;font-size:13px;color:var(--muted);margin-bottom:16px}
 .dev-code strong{color:var(--ink);letter-spacing:.1em}
 .dev-code>button{color:var(--brand-ink);font-weight:600;margin-left:12px;text-decoration:underline;text-underline-offset:3px}

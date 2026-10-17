@@ -39,7 +39,7 @@ import { linkPreviewLabel,shouldPollParsing,shouldClearPageOnError } from '@/sha
 
 async function api(path:string,method='GET',body?:unknown,signal?:AbortSignal) {
   const response=await fetch(`/api/v1/${path}`,{method,headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined,signal,...(signal?{cache:'no-store' as const}:{})});
-  const data=await response.json();if(!response.ok) throw Object.assign(new Error(data.error||'操作失败'),{status:response.status});return data;
+  const data=await response.json().catch(()=>({}));if(!response.ok) throw Object.assign(new Error(data.error||(response.status===429?'操作太频繁，请稍后再试':'操作失败')),{status:response.status});return data;
 }
 const act=(action:Action,input:unknown={})=>api(`actions/${action}`,'POST',input);
 const date=(s:string)=>new Date(s).toLocaleString('zh-CN',{month:'long',day:'numeric',hour:'2-digit',minute:'2-digit'});
@@ -354,10 +354,17 @@ function GrantForm({ctx}:{ctx:Item & {communities:Item[]}}){
  const {token,setToken,setModal,communities,run,setToast,busy}=ctx;
 return <Modal title="连接你的 Agent" onClose={()=>{setModal('');setToken('');}}>{token?<div className="token-result"><CheckCircle2 size={35}/><h3>授权已创建</h3><p>令牌只显示这一次，请保存在你的 Agent 配置中。</p><code>{token}</code><button className="secondary" onClick={()=>{navigator.clipboard.writeText(token);setToast('令牌已复制');}}><Copy size={16}/>复制令牌</button></div>:<form onSubmit={e=>{e.preventDefault();const f=new FormData(e.currentTarget);run(async()=>{const r=await act('grants_create',{name:f.get('name'),days:Number(f.get('days')),scopes:f.getAll('scopes'),communityIds:f.getAll('communityIds')});setToken(r.token);},'授权已创建');}}><Field label="Agent 名称"><input name="name" required placeholder="例如：我的 AI 助手" maxLength={60}/></Field><fieldset><legend>允许的操作</legend>{scopes.map(s=><label className="checkbox" key={s}><input name="scopes" value={s} type="checkbox" defaultChecked={s==='content:read'}/>{scopeLabels[s]}</label>)}</fieldset><fieldset><legend>允许访问的社群</legend><p className="muted">不选择时，只能读取公开内容、发布个人动态。</p>{communities.filter(c=>c.membership_status==='active').map(c=><label className="checkbox" key={c.id}><input name="communityIds" value={c.id} type="checkbox"/>{c.name}</label>)}</fieldset><Field label="有效期"><select name="days"><option value="7">7 天</option><option value="30">30 天</option><option value="90">90 天</option></select></Field><button className="primary full" disabled={busy}>创建授权</button></form>}</Modal>;}
 
+const MEMBER_DEVICE_KEY='aicommunity:member';
 function Login({ctx}:{ctx:Item & {communities:Item[]}}){
   const {router,refresh,dev,inviteOnly,setToast}=ctx;
   const [phone,setPhone]=useState(''),[code,setCode]=useState(''),[invitation,setInvitation]=useState(''),[privacyAgreed,setPrivacyAgreed]=useState(false);
   const [sent,setSent]=useState(false),[demoCode,setDemoCode]=useState(''),[sending,setSending]=useState(false),[error,setError]=useState('');
+  const [showInvite,setShowInvite]=useState(false),[knownMember,setKnownMember]=useState(false);
+  const inviteInput=useRef<HTMLInputElement>(null);
+  useEffect(()=>{try{setKnownMember(localStorage.getItem(MEMBER_DEVICE_KEY)==='1');}catch{}},[]);
+  function revealInvite(){flushSync(()=>setShowInvite(true));inviteInput.current?.focus();}
+  // Registered numbers skip the invitation check on the server, so only a new number is asked for a code.
+  function requireInvitation(message?:string){revealInvite();setError(invitation.trim()?message||'邀请码无效、已使用或已过期，请联系管理员获取新的邀请码':'这个手机号还没有注册。请填写管理员发给你的邀请码，再获取验证码。');}
   const fullPhone=phone.trim().startsWith('+86')?phone.trim():`+86${phone.trim()}`;
   const headers={'Content-Type':'application/json','X-Invite-Code':invitation.trim(),'X-Privacy-Version':privacyAgreed?PRIVACY_VERSION:''};
   async function send(){
@@ -366,8 +373,8 @@ function Login({ctx}:{ctx:Item & {communities:Item[]}}){
     if(!/^\+861[3-9]\d{9}$/.test(fullPhone)){setError('请输入有效的 11 位中国大陆手机号。');return;}
     setSending(true);setDemoCode('');
     try{
-      const r=await fetch('/api/auth/phone-number/send-otp',{method:'POST',headers,body:JSON.stringify({phoneNumber:fullPhone})});const d=await r.json();
-      if(!r.ok)throw new Error(d.message||'发送失败，请稍后重试');
+      const r=await fetch('/api/auth/phone-number/send-otp',{method:'POST',headers,body:JSON.stringify({phoneNumber:fullPhone})});const d=await r.json().catch(()=>({}));
+      if(!r.ok){if(d.code==='INVITATION_REQUIRED'){requireInvitation(d.message);return;}throw new Error(d.message||'验证码暂时无法发送，请稍后重试');}
       setSent(true);
       if(dev){const otp=await api(`dev-otp?phone=${encodeURIComponent(fullPhone)}`);setDemoCode(otp.code||'');}
       setToast(dev?'本地验证码已生成':'验证码已发送');
@@ -376,20 +383,23 @@ function Login({ctx}:{ctx:Item & {communities:Item[]}}){
   async function verify(e:FormEvent<HTMLFormElement>){
     e.preventDefault();setError('');setSending(true);
     try{
-      const r=await fetch('/api/auth/phone-number/verify',{method:'POST',headers,body:JSON.stringify({phoneNumber:fullPhone,code})});const d=await r.json();
-      if(!r.ok)throw new Error(d.message||'验证失败，请检查验证码和邀请码');
+      const r=await fetch('/api/auth/phone-number/verify',{method:'POST',headers,body:JSON.stringify({phoneNumber:fullPhone,code})});const d=await r.json().catch(()=>({}));
+      if(!r.ok){if(d.code==='INVITATION_REQUIRED'){requireInvitation(d.message);return;}throw new Error(d.message||'验证失败，请检查验证码');}
+      try{localStorage.setItem(MEMBER_DEVICE_KEY,'1');}catch{}
       refresh();const q=location.search.slice(1);
       if(new URLSearchParams(q).has('client_id'))location.href=`/api/auth/oauth2/authorize?${q}`;else {let destination=loginReturnPath(new URLSearchParams(q).get('returnTo'));if(destination==='/'){try{const progress=await api('onboarding');if(!progress.guest&&!progress.dismissed&&progress.completed===0)destination='/start';}catch{}}router.replace(destination);router.refresh();}
     }catch(e){setError((e as Error).message);}finally{setSending(false);}
   }
   return <div className="login-card"><span className="large-mark">AI<span>+</span></span><h1>一起，探索 AI 的可能</h1><p>{inviteOnly?'邀请内测中，和同城伙伴一起实践。':'分享实践，连接同城伙伴。'}</p><form onSubmit={verify}>
     <Field label="手机号"><div className="phone-input"><span>+86</span><input aria-label="手机号" value={phone} onChange={e=>{setPhone(e.target.value);setCode('');setDemoCode('');setSent(false);setError('');}} placeholder="请输入手机号码" type="tel" inputMode="tel" autoComplete="tel-national" maxLength={14} required disabled={sending}/></div></Field>
-    {inviteOnly&&<Field label="邀请码（新成员必填）"><input aria-label="邀请码" value={invitation} onChange={e=>{setInvitation(e.target.value);setError('');}} placeholder="粘贴邀请人发给你的邀请码" autoCapitalize="none" autoCorrect="off" spellCheck={false} maxLength={128} disabled={sending}/><small className="muted">已有账户可留空，直接获取验证码登录。</small></Field>}
+    {inviteOnly&&(showInvite
+      ?<Field label="邀请码（仅首次注册需要）"><input ref={inviteInput} aria-label="邀请码" value={invitation} onChange={e=>{setInvitation(e.target.value);setError('');}} placeholder="粘贴管理员发给你的邀请码" autoCapitalize="none" autoCorrect="off" spellCheck={false} maxLength={128} disabled={sending}/><small className="muted">注册成功后，再登录不需要邀请码。</small></Field>
+      :!knownMember&&<button type="button" className="text-button invite-toggle" onClick={revealInvite} disabled={sending}>第一次来、收到了邀请码？点这里填写</button>)}
     <label className="checkbox privacy-choice"><input type="checkbox" checked={privacyAgreed} onChange={e=>setPrivacyAgreed(e.target.checked)} required disabled={sending}/><span>我已阅读<Link href="/privacy" target="_blank">个人信息处理说明</Link>，同意使用手机号完成登录验证。公开资料、活动预约和图片 AI 处理分别按所选功能处理。</span></label>
     <Field label="验证码"><div className="code-input"><input aria-label="验证码" value={code} onChange={e=>setCode(e.target.value)} placeholder="6 位验证码" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required disabled={sending}/><button type="button" onClick={send} disabled={sending||!phone||!privacyAgreed}>{sent?'重新获取':'获取验证码'}</button></div></Field>
     {demoCode&&<div className="dev-code">本地体验验证码：<strong>{demoCode}</strong><button type="button" onClick={()=>setCode(demoCode)}>填入</button></div>}
     {error&&<p className="composer-error" role="alert">{error}</p>}
-    <button className="primary full" disabled={sending}>{sending?'验证处理中…':'登录 / 注册'}<ArrowUpRight size={18}/></button><p className="login-note">{inviteOnly?'新成员验证通过后创建账户并使用邀请码。':'首次登录将自动创建账户。'}手机号不会公开显示。</p>
+    <button className="primary full" disabled={sending}>{sending?'验证处理中…':'登录 / 注册'}<ArrowUpRight size={18}/></button><p className="login-note">{inviteOnly?showInvite?'新成员验证通过后创建账户并使用邀请码。':'已注册的成员直接用手机验证码登录。':'首次登录将自动创建账户。'}手机号不会公开显示。</p>
   </form></div>;
 }
 
