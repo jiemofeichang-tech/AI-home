@@ -1,0 +1,21 @@
+.manager { border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin: 24px 0 32px; }
+.heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.heading h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 16px; }
+.heading h3 svg { color: var(--brand); }
+.manager > :global(.muted) { margin: 8px 0 12px; }
+.message { color: var(--success); font-size: 13px; }
+.form { padding: 4px 16px 16px; margin: 12px 0 16px; border-radius: 12px; background: var(--subtle); border: 1px solid var(--line); }
+.row { display: grid; grid-template-columns: 90px minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.row + .row, .form > :global(.field) + .row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.form :global(.field) { margin: 12px 0 4px; }
+.list { list-style: none; padding: 0; margin: 0; }
+.list li { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.list li:last-child { border-bottom: 0; }
+.list li > div { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.list strong { font-size: 14px; font-weight: 600; }
+.list li > div span { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.list :global(.text-button) { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.archived { opacity: .6; }
+@media (max-width: 650px) {
+  .row, .row + .row, .form > :global(.field) + .row { grid-template-columns: 1fr; gap: 0; }
+}

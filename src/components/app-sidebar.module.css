@@ -1,0 +1,66 @@
+.scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 22px 14px 12px; scrollbar-width: thin; }
+.brand { display: flex; align-items: center; gap: 10px; margin: 0 8px 22px; }
+.brand strong { font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
+
+.nav { display: grid; gap: 2px; }
+.item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 38px;
+  padding: 0 10px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  transition: background .15s, color .15s;
+}
+.item > svg { width: 18px; height: 18px; color: var(--muted); }
+.item > span:not([class]) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item:hover { background: var(--hover); color: var(--ink); }
+.active, .active:hover { background: var(--brand-soft); color: var(--brand-ink); font-weight: 600; }
+.active > svg { color: var(--brand); }
+
+.badge { margin-left: auto; padding: 1px 8px; border-radius: 999px; background: var(--brand); color: #fff; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.count { margin-left: auto; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+.group { margin-top: 18px; }
+.group summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px 6px;
+  list-style: none;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  color: var(--faint);
+  cursor: pointer;
+  user-select: none;
+}
+.group summary::-webkit-details-marker { display: none; }
+.group summary::after { content: ''; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg) translateY(-2px); margin-left: 8px; transition: transform .15s; }
+.group:not([open]) summary::after { transform: rotate(-45deg); }
+.group summary:hover { color: var(--muted); }
+.groupLink { display: inline-flex; margin-left: auto; padding: 2px; border-radius: 6px; color: var(--faint); }
+.groupLink:hover { color: var(--brand); background: var(--hover); }
+
+.subgroup { display: grid; gap: 1px; margin-bottom: 6px; }
+.subLabel { padding: 6px 10px 2px; font-size: 11px; color: var(--faint); }
+.topic { gap: 10px; min-height: 36px; font-weight: 500; }
+.muted { color: var(--faint); width: 12px; height: 12px; }
+.community { min-height: 34px; font-size: 13px; color: var(--muted); }
+.dot { display: grid; place-items: center; width: 22px; height: 22px; flex-shrink: 0; border-radius: 7px; background: var(--subtle); border: 1px solid var(--line); font-size: 11px; font-weight: 600; color: var(--muted); }
+
+.footer { padding: 12px 14px 16px; border-top: 1px solid var(--line); display: grid; gap: 10px; background: var(--surface); }
+.compose { min-height: 42px; }
+.account { display: grid; gap: 4px; }
+.accountLink { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 10px; transition: background .15s; }
+.accountLink:hover { background: var(--hover); }
+.accountLink > span:nth-child(2) { display: grid; flex: 1; min-width: 0; }
+.accountLink strong { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.accountLink small { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.accountLink > svg { color: var(--faint); }
+.accountTools { display: flex; gap: 14px; padding: 0 8px; }
+.accountTools a, .accountTools button { display: inline-flex; align-items: center; gap: 5px; padding: 0; font-size: 12px; color: var(--muted); }
+.accountTools a:hover, .accountTools button:hover { color: var(--ink); }

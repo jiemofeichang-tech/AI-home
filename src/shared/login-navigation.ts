@@ -1,7 +1,7 @@
 /** Pages that display posts must have a live session before rendering. */
 export function requiresPostLogin(path:string) {
   const [section,id]=path.split('/').filter(Boolean);
-  return !section || ['home','posts','discover','profile'].includes(section) || (section==='communities' && !!id);
+  return !section || ['home','posts','discover','profile'].includes(section) || (['communities','topics'].includes(section) && !!id);
 }
 
 /** Keep login return destinations on this site and avoid login/consent loops. */

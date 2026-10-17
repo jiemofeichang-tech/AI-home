@@ -3,13 +3,13 @@ import { test } from 'node:test';
 import { loginReturnPath,loginUrl,requiresPostLogin } from '../src/shared/login-navigation';
 
 test('pages with a post feed or post detail require login, including the explicit home route',()=>{
-  for(const path of ['/','/home','/home/','/posts','/posts/post-123','/posts/post-123/','/discover','/profile','/profile/member_123','/communities/community-123','/communities/community-123/']) {
+  for(const path of ['/','/home','/home/','/posts','/posts/post-123','/posts/post-123/','/discover','/profile','/profile/member_123','/communities/community-123','/communities/community-123/','/topics/projects','/topics/projects/']) {
     assert.equal(requiresPostLogin(path),true,path);
   }
 });
 
-test('login, privacy, community directory and event pages remain publicly reachable',()=>{
-  for(const path of ['/login','/login/','/consent','/privacy','/communities','/communities/','/events','/events/event-123','/events/event-123/']) {
+test('login, privacy, onboarding, community/board directories and event pages remain publicly reachable',()=>{
+  for(const path of ['/login','/login/','/consent','/privacy','/communities','/communities/','/events','/events/event-123','/events/event-123/','/topics','/topics/','/start']) {
     assert.equal(requiresPostLogin(path),false,path);
   }
 });
