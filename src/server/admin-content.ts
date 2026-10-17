@@ -33,7 +33,7 @@ export async function adminContentList(actor:Actor,input:{targetType:TargetType;
   if(input.status==='visible')conditions.push(`NOT ${unavailable}`);
   if(input.q) {
     const q=bind(`%${input.q.replace(/[\\%_]/g,'\\$&')}%`);
-    conditions.push(`(t.body ILIKE ${q} OR u.name ILIKE ${q})`);
+    conditions.push(`(t.body ILIKE ${q}${input.targetType==='post'?` OR t.title ILIKE ${q}`:''} OR u.name ILIKE ${q})`);
   }
   if(input.cursor) {
     const [cursor]=await query(`SELECT created_at::text AS created_at,id FROM ${table} WHERE id=$1`,[input.cursor]);
@@ -52,7 +52,7 @@ export async function adminContentList(actor:Actor,input:{targetType:TargetType;
   const page=rows.slice(0,input.limit),items:Item[]=[];
   for(const row of page){
     const media=input.targetType==='post'&&!row.deleted_at?await query('SELECT id,mime FROM media WHERE post_id=$1 ORDER BY position NULLS LAST,created_at,id',[row.id]):[];
-    items.push({id:row.id,targetType:input.targetType,authorId:row.author_id,authorName:row.author_name,body:row.body,
+    items.push({id:row.id,targetType:input.targetType,authorId:row.author_id,authorName:row.author_name,title:row.title||'',body:row.body,
     hiddenAt:row.hidden_at,deletedAt:row.deleted_at,moderationStatus:row.safety_status||row.moderation_status,createdAt:row.created_at,
     communityName:row.community_name,communityVisibility:row.community_visibility,unavailable:row.unavailable,
     ...(input.targetType==='comment'?{postId:row.post_id,postHiddenAt:row.post_hidden_at,postDeletedAt:row.post_deleted_at,postModerationStatus:row.post_moderation_status}:{}),

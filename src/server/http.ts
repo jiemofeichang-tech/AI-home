@@ -22,6 +22,8 @@ export const routes:[string,string,Action][]=[
   ['GET','moderation','moderation_list'],['POST','admin/moderation/:id/decision','moderation_decide'],['POST','moderation/:id/appeal','moderation_appeal'],['POST','admin/moderation/:id/retry','moderation_retry'],['POST','moderation/:id/withdraw','moderation_withdraw'],
   ['GET','admin/invitations','invitations_list'],['POST','admin/invitations','invitations_create'],['DELETE','admin/invitations/:id','invitations_revoke'],
   ['POST','communities/:id/remove','communities_remove'],
+  ['GET','topics','topics_list'],['GET','topics/:id','topics_get'],['POST','admin/topics','topics_save'],
+  ['GET','onboarding','onboarding_get'],['PUT','onboarding','onboarding_dismiss'],
   ['GET','posts','posts_list'],['POST','posts','posts_create'],['GET','posts/:id','posts_get'],['DELETE','posts/:id','posts_delete'],['POST','posts/:id/comments','comments_create'],['PUT','posts/:id/reactions','reactions_set'],
   ['GET','communities','communities_list'],['POST','communities','communities_create'],['GET','communities/:id','communities_get'],['POST','communities/:id/join','communities_join'],['POST','communities/:id/leave','communities_leave'],['GET','communities/:id/members','communities_members'],['POST','communities/:id/approve','communities_approve'],['PUT','communities/:id/announcement','communities_announcement'],
   ['GET','events','events_list'],['POST','events','events_create'],['GET','events/:id','events_get'],['PUT','events/:id/rsvp','events_rsvp'],['GET','events/:id/attendees','events_attendees'],['POST','events/:id/checkin','events_checkin'],['PATCH','events/:id','events_update'],
@@ -35,7 +37,7 @@ export function openapi() {
     const pathParams=[...path.matchAll(/:(\w+)/g)].map(m=>({name:m[1],in:'path',required:true,schema:{type:'string'}}));
     const queryParams=method==='GET'?Object.entries(schema.properties||{}).filter(([name])=>!pathParams.some(p=>p.name===name)).map(([name,value])=>({name,in:'query',required:schema.required?.includes(name)||false,schema:value})):[];
     for(const parameter of pathParams){if(schema.properties)delete schema.properties[parameter.name];schema.required=schema.required?.filter(name=>name!==parameter.name);}
-    const publicRead=['communities_list','communities_get','events_list','events_get','profile_get'].includes(action);
+    const publicRead=['communities_list','communities_get','events_list','events_get','profile_get','topics_list','topics_get'].includes(action);
     (paths[key]||={})[method.toLowerCase()]={operationId:action,parameters:[...pathParams,...queryParams],...(!['GET','DELETE'].includes(method)?{requestBody:{required:true,content:{'application/json':{schema}}}}:{}),responses:{200:{description:'成功',content:{'application/json':{schema:{type:'object'}}}},401:{description:'需要登录或授权'},403:{description:'没有操作权限'},409:{description:'名额已满或幂等冲突'}},security:[{bearerAuth:[]},...(publicRead?[{}]:[])]};
   }
   return {openapi:'3.0.3',info:{title:'AI 社区 API',version:'0.1.0'},servers:[{url:`${config.url}/api/v1`}],paths,components:{securitySchemes:{bearerAuth:{type:'http',scheme:'bearer'}}}};

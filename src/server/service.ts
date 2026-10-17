@@ -12,6 +12,7 @@ import { enqueueModeration,moderationList,moderationDecide,moderationAppeal,mode
 import { submitModerationDraft } from './moderation-drafts';
 import { adminStats } from './admin-stats';
 import { adminContentList,adminContentModerate,queueContentIndex } from './admin-content';
+import { listTopics,getTopic,saveTopic,postingTopic,onboarding,dismissOnboarding } from './topics';
 
 const uid=()=>randomUUID();
 export const digest=(s:string)=>createHash('sha256').update(s).digest('hex');
@@ -40,8 +41,9 @@ export async function postView(a:Actor,id:string,depth=0):Promise<Item> {
     query(`SELECT count(*)::int AS count FROM posts p WHERE p.original_id=$1 AND p.community_id IS NULL AND ${visiblePostSQL('p','$2','$3','$4')}`,[id,a.userId||'',a.communityIds||[],!!a.grantId])
   ]);
   const c=p.community_id?(await query('SELECT id,name,visibility FROM communities WHERE id=$1',[p.community_id]))[0]:null;
+  const topic=p.topic_id?(await query('SELECT id,slug,name,icon FROM topics WHERE id=$1',[p.topic_id]))[0]||null:null;
   const processing=p.author_id===a.userId&&!a.grantId?await query(`SELECT id,kind,target_id,status,attempts FROM jobs WHERE target_id IN (SELECT id FROM media WHERE post_id=$1 UNION SELECT id FROM link_resources WHERE post_id=$1) AND status IN ('pending','processing','failed','blocked')`,[id]):[];
-  return { ...p,author,community:c,media:media.map(m=>({...m,url:`/api/v1/media/${m.id}`})),links,comments,reactions,processing,repostCount:counts[0].count,original:p.original_id&&depth<8?await postView(a,p.original_id,depth+1):null };
+  return { ...p,author,community:c,topic,media:media.map(m=>({...m,url:`/api/v1/media/${m.id}`})),links,comments,reactions,processing,repostCount:counts[0].count,original:p.original_id&&depth<8?await postView(a,p.original_id,depth+1):null };
 }
 async function safePosts(a:Actor,rows:Item[]) {
   const result:Item[]=[];
@@ -81,7 +83,7 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
   if(!parsed.success) fail(400,parsed.error.issues.map(i=>`${i.path.join('.')}: ${i.message}`).join(';'),'INVALID_INPUT');
   const p=parsed.data as Item;
   await active(a);
-  if(['posts_list','posts_get','search'].includes(action) || (a.grantId && ['communities_list','communities_get','events_list','events_get','profile_get'].includes(action))) scope(a,'content:read');
+  if(['posts_list','posts_get','search'].includes(action) || (a.grantId && ['communities_list','communities_get','events_list','events_get','profile_get','topics_list','topics_get'].includes(action))) scope(a,'content:read');
   switch(action) {
     case 'invitations_list': return listInvitations(a);
     case 'invitations_create': return createInvitations({count:p.count,days:p.days,label:p.label},a);
@@ -90,6 +92,7 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
       const values:unknown[]=[]; const clauses=['p.deleted_at IS NULL'];
       const bind=(x:unknown)=>{values.push(x);return `$${values.length}`;};
       if(p.communityId) {await communityAccess(a,p.communityId);clauses.push(`p.community_id=${bind(p.communityId)}`);}
+      if(p.topicId) clauses.push(`p.topic_id=${bind(p.topicId)}`);
       if(p.authorId) clauses.push(`p.author_id=${bind(p.authorId)}`);
       if(p.tag) clauses.push(`${bind(p.tag)}=ANY(p.tags)`);
       if(p.cursor) clauses.push(`(p.created_at,p.id)<(SELECT created_at,id FROM posts WHERE id=${bind(p.cursor)})`);
@@ -104,7 +107,8 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
     case 'posts_get': return postView(a,p.id);
     case 'posts_create': {
       scope(a,p.originalId?'interactions:write':'posts:write');
-      if(!p.body&&!p.originalId&&!p.mediaIds.length&&!p.links.length) fail(400,'请输入内容或添加图片、视频、链接');
+      if(!p.title&&!p.body&&!p.originalId&&!p.mediaIds.length&&!p.links.length) fail(400,'请输入内容或添加图片、视频、链接');
+      if(p.topicId&&p.communityId) fail(400,'板块帖子是公开动态，不能同时发布到社群');
       if(p.communityId) await communityAccess(a,p.communityId,true);
       if(p.originalId) {
         const original=await readablePost(a,p.originalId,undefined,1);
@@ -112,6 +116,7 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
       }
       return idempotent(a,action,p,async client=>{
         if(p.communityId) await communityAccess(a,p.communityId,true,false,client);
+        if(p.topicId) await postingTopic(a,p.topicId,client);
         if(p.originalId) await readablePost(a,p.originalId,client);
         if(new Set(p.mediaIds).size!==p.mediaIds.length)fail(400,'请勿重复添加同一附件');
         const attachments=p.mediaIds.length?await query("SELECT id,mime FROM media WHERE id=ANY($1::text[]) AND owner_id=$2 AND post_id IS NULL AND usage_kind='post' ORDER BY id FOR UPDATE",[p.mediaIds,a.userId],client):[];
@@ -120,8 +125,8 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
         const positions=new Map((p.mediaIds as string[]).map((mediaId,position)=>[mediaId,position]));
         const videos=attachments.filter(item=>isVideoMime(item.mime));
         if(videos.length&&(videos.length!==1||attachments.length!==1))fail(400,'每条动态可添加 1 个视频或最多 9 张图片，暂不支持混合发布');
-        const id=uid();const tags=Array.from(new Set<string>((p.body.match(/#[\p{L}\p{N}_-]+/gu)||[]).map((s:string)=>s.slice(1))));
-        await query('INSERT INTO posts(id,author_id,community_id,body,tags,original_id,agent_name,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[id,a.userId,p.communityId||null,p.body,tags,p.originalId||null,a.agentName||null,p.idempotencyKey||null],client);
+        const id=uid();const tags=Array.from(new Set<string>((`${p.title}\n${p.body}`.match(/#[\p{L}\p{N}_-]+/gu)||[]).map((s:string)=>s.slice(1))));
+        await query('INSERT INTO posts(id,author_id,community_id,topic_id,title,body,tags,original_id,agent_name,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[id,a.userId,p.communityId||null,p.topicId||null,p.title,p.body,tags,p.originalId||null,a.agentName||null,p.idempotencyKey||null],client);
         for(const attachment of attachments) {
           const aiConsent=!isVideoMime(attachment.mime)&&p.imageAnalysisConsent;
           const updated=await query("UPDATE media SET post_id=$1,ai_consent=$4,status=CASE WHEN $4 THEN 'pending' ELSE 'ready' END,position=$5 WHERE id=$2 AND owner_id=$3 AND post_id IS NULL AND usage_kind='post' RETURNING id,ai_consent",[id,attachment.id,a.userId,aiConsent,positions.get(attachment.id)],client);
@@ -231,12 +236,17 @@ export async function execute(action:Action,raw:unknown,a:Actor):Promise<any> {
     case 'search': {
       const term=`%${p.q.replace(/[\\%_]/g,'\\$&')}%`;
       const candidates=await searchCandidates(p.q);
-      const rows=await query(`SELECT DISTINCT p.id,p.created_at FROM posts p LEFT JOIN media m ON m.post_id=p.id AND m.moderation_status='approved' AND m.derivation_status='approved' LEFT JOIN link_resources l ON l.post_id=p.id AND l.moderation_status='approved' AND l.derivation_status='approved' LEFT JOIN profiles pr ON pr.user_id=p.author_id LEFT JOIN communities c ON c.id=p.community_id WHERE p.deleted_at IS NULL AND (p.body ILIKE $1 OR m.extracted_text ILIKE $1 OR m.description ILIKE $1 OR l.title ILIKE $1 OR l.content ILIKE $1 OR l.description ILIKE $1 OR (p.id=ANY($9::text[]) AND NOT EXISTS(SELECT 1 FROM media hidden_media WHERE hidden_media.post_id=p.id AND hidden_media.derivation_status<>'approved') AND NOT EXISTS(SELECT 1 FROM link_resources hidden_link WHERE hidden_link.post_id=p.id AND hidden_link.derivation_status<>'approved'))) AND ($2='' OR coalesce(c.city,pr.city)=$2) AND ($3='' OR $3=ANY(p.tags)) AND ($4<>'github' OR EXISTS(SELECT 1 FROM link_resources original_link WHERE original_link.post_id=p.id AND original_link.moderation_status='approved' AND original_link.platform='github')) AND ${visiblePostSQL('p','$5','$6','$7')} AND ($8='' OR (p.created_at,p.id)<(SELECT created_at,id FROM posts WHERE id=$8)) ORDER BY p.created_at DESC,p.id DESC LIMIT 51`,[term,p.city||'',p.tag||'',p.type,a.userId||'',a.communityIds||[],!!a.grantId,p.cursor||'',candidates]);
+      const rows=await query(`SELECT DISTINCT p.id,p.created_at FROM posts p LEFT JOIN media m ON m.post_id=p.id AND m.moderation_status='approved' AND m.derivation_status='approved' LEFT JOIN link_resources l ON l.post_id=p.id AND l.moderation_status='approved' AND l.derivation_status='approved' LEFT JOIN profiles pr ON pr.user_id=p.author_id LEFT JOIN communities c ON c.id=p.community_id WHERE p.deleted_at IS NULL AND (p.body ILIKE $1 OR p.title ILIKE $1 OR m.extracted_text ILIKE $1 OR m.description ILIKE $1 OR l.title ILIKE $1 OR l.content ILIKE $1 OR l.description ILIKE $1 OR (p.id=ANY($9::text[]) AND NOT EXISTS(SELECT 1 FROM media hidden_media WHERE hidden_media.post_id=p.id AND hidden_media.derivation_status<>'approved') AND NOT EXISTS(SELECT 1 FROM link_resources hidden_link WHERE hidden_link.post_id=p.id AND hidden_link.derivation_status<>'approved'))) AND ($2='' OR coalesce(c.city,pr.city)=$2) AND ($3='' OR $3=ANY(p.tags)) AND ($4<>'github' OR EXISTS(SELECT 1 FROM link_resources original_link WHERE original_link.post_id=p.id AND original_link.moderation_status='approved' AND original_link.platform='github')) AND ${visiblePostSQL('p','$5','$6','$7')} AND ($8='' OR (p.created_at,p.id)<(SELECT created_at,id FROM posts WHERE id=$8)) ORDER BY p.created_at DESC,p.id DESC LIMIT 51`,[term,p.city||'',p.tag||'',p.type,a.userId||'',a.communityIds||[],!!a.grantId,p.cursor||'',candidates]);
       const posts=['all','posts','github'].includes(p.type)?(await safePosts(a,rows)).slice(0,p.limit):[];
       const communities=['all','communities'].includes(p.type)?(await execute('communities_list',{city:p.city},a)).items.filter((c:Item)=>`${c.name}${c.description}`.includes(p.q)):[];
       const events=['all','events'].includes(p.type)?(await execute('events_list',{city:p.city},a)).items.filter((e:Item)=>`${e.title}${e.description}${e.recap}`.includes(p.q)):[];
       return {posts,communities,events,source:searchClient?'hybrid':'database',nextCursor:rows.length>p.limit?posts.at(-1)?.id||null:null};
     }
+    case 'topics_list': return listTopics(a,p.includeArchived);
+    case 'topics_get': return getTopic(a,p.id);
+    case 'topics_save': return saveTopic(a,p);
+    case 'onboarding_get': return onboarding(a);
+    case 'onboarding_dismiss': return dismissOnboarding(a,p.dismissed);
     case 'profile_get': {
       const profile=await publicUser(p.id);if(!profile) fail(404,'用户不存在');const [counts]=await query(`SELECT (SELECT count(*)::int FROM follows WHERE following_id=$1) AS followers,(SELECT count(*)::int FROM follows WHERE follower_id=$1) AS following,EXISTS(SELECT 1 FROM follows WHERE follower_id=$2 AND following_id=$1) AS followed`,[p.id,a.userId||'']);return {...profile,...counts};
     }

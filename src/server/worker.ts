@@ -77,7 +77,7 @@ export async function indexPost(id:string){
     const [visibility]=p?await query(`SELECT ${unavailablePostSQL('p')} AS unavailable FROM posts p WHERE p.id=$1`,[id],client):[];
     if(!p||ancestors.some(row=>row.deleted_at||row.hidden_at||row.moderation_status!=='approved')||visibility?.unavailable){const task=await index.index('posts').deleteDocument(id);await index.tasks.waitForTask(task.taskUid);return;}
     const media=await query("SELECT extracted_text,description FROM media WHERE post_id=$1 AND moderation_status='approved' AND derivation_status='approved'",[id],client);const links=await query("SELECT title,description,content FROM link_resources WHERE post_id=$1 AND moderation_status='approved' AND derivation_status='approved'",[id],client);
-    const task=await index.index('posts').addDocuments([{id,body:p.body,tags:p.tags,text:[...media.map(m=>`${m.extracted_text} ${m.description}`),...links.map(l=>`${l.title} ${l.description} ${l.content}`)].join('\n')}],{primaryKey:'id'});await index.tasks.waitForTask(task.taskUid);
+    const task=await index.index('posts').addDocuments([{id,title:p.title,body:p.body,tags:p.tags,text:[...media.map(m=>`${m.extracted_text} ${m.description}`),...links.map(l=>`${l.title} ${l.description} ${l.content}`)].join('\n')}],{primaryKey:'id'});await index.tasks.waitForTask(task.taskUid);
   });
 }
 async function processObjectDeletion(id:string){
