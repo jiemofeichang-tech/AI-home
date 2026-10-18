@@ -24,6 +24,7 @@ export async function communityAccess(actor:Actor,id:string,write=false,admin=fa
   return c;
 }
 export async function readablePost(actor:Actor,id:string,client?:PoolClient,depth=0):Promise<Item> {
+  user(actor);
   if(depth>8) fail(400,'转发层级过深');
   const [p]=await query("SELECT * FROM posts WHERE id=$1 AND deleted_at IS NULL AND hidden_at IS NULL AND moderation_status='approved'",[id],client);
   if(!p) fail(404,'帖子不存在或已被删除');

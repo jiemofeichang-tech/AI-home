@@ -5,10 +5,17 @@ const id = z.string().min(1).max(128);
 const text = z.string().trim().min(1).max(10000);
 const page = { limit: z.coerce.number().int().min(1).max(50).default(20), cursor: z.string().optional() };
 const webUrl=z.string().url('请输入有效的 HTTP 或 HTTPS 网页链接').max(2048).refine(value=>{try{return ['http:','https:'].includes(new URL(value).protocol);}catch{return false;}},'仅支持 HTTP 或 HTTPS 网页链接');
+const flag=(fallback:boolean)=>z.preprocess(value=>value==='true'?true:value==='false'?false:value,z.boolean().default(fallback));
+export const topicSections = { start:'新人必看', share:'分享与讨论', connect:'连接与合作' } as const;
 export const contracts = {
-  posts_list: z.object({ ...page, feed:z.enum(['latest','following','bookmarks']).default('latest'), communityId:id.optional(), authorId:id.optional(), tag:z.string().optional() }),
+  posts_list: z.object({ ...page, feed:z.enum(['latest','following','bookmarks']).default('latest'), communityId:id.optional(), topicId:id.optional().describe('只看某个板块的帖子'), authorId:id.optional(), tag:z.string().optional() }),
   posts_get: z.object({ id }),
-  posts_create: z.object({ body:z.string().trim().max(10000).default(''), communityId:id.optional(), originalId:id.optional(), mediaIds:z.array(id).max(9).default([]), imageAnalysisConsent:z.boolean().default(false).describe('仅在本人同意将图片交给配置的AI服务提取文字后设为true；不影响正常发图'), links:z.array(webUrl).max(5).default([]), idempotencyKey:z.string().max(128).optional() }),
+  posts_create: z.object({ title:z.string().trim().max(120,'标题最多 120 个字符').default('').describe('可选标题，适合项目展示、求助等长帖'), body:z.string().trim().max(10000).default(''), topicId:id.optional().describe('发布到的板块 ID，可用 topics_list 查询；不能与 communityId 同时使用'), communityId:id.optional(), originalId:id.optional(), mediaIds:z.array(id).max(9).default([]), imageAnalysisConsent:z.boolean().default(false).describe('仅在本人同意将图片交给配置的AI服务提取文字后设为true；不影响正常发图'), links:z.array(webUrl).max(5).default([]), idempotencyKey:z.string().max(128).optional() }),
+  topics_list: z.object({ includeArchived:flag(false).describe('仅平台管理员可查看已归档板块') }),
+  topics_get: z.object({ id:id.describe('板块 ID 或标识') }),
+  topics_save: z.object({ id:id.optional(), slug:z.string().trim().regex(/^[a-z0-9][a-z0-9-]{0,39}$/,'板块标识只能使用小写字母、数字和短横线，最多 40 个字符'), name:z.string().trim().min(1,'请填写板块名称').max(30,'板块名称最多 30 个字符'), description:z.string().trim().max(500,'板块简介最多 500 个字符').default(''), icon:z.string().trim().min(1,'请填写板块图标').max(8,'图标请使用 1 个表情符号').default('💬'), section:z.enum(['start','share','connect']).default('share'), position:z.coerce.number().int().min(0).max(10000).default(100), posting:z.enum(['members','admins']).default('members'), archived:z.boolean().default(false) }),
+  onboarding_get: z.object({}),
+  onboarding_dismiss: z.object({ dismissed:z.boolean().default(true) }),
   posts_delete: z.object({ id }),
   comments_create: z.object({ id, body:text, idempotencyKey:z.string().max(128).optional() }),
   reactions_set: z.object({ id, kind:z.enum(['like','bookmark']), active:z.boolean() }),
@@ -53,7 +60,7 @@ export const contracts = {
   admin_stats: z.object({}),
   admin_content_list: z.object({targetType:z.enum(['post','comment']).default('post'),status:z.enum(['all','visible','hidden','deleted']).default('all'),q:z.string().trim().max(200).optional(),...page}),
   admin_content_moderate: z.object({targetType:z.enum(['post','comment']),targetId:id,decision:z.enum(['hide','restore','delete']),reason:z.string().trim().max(1000).optional()}),
-  moderation_list: z.object({mine:z.preprocess(value=>value==='true'?true:value==='false'?false:value,z.boolean().default(false)),status:z.enum(['pending','review','rejected','approved','deleted','actionable']).optional()}),
+  moderation_list: z.object({mine:flag(false),status:z.enum(['pending','review','rejected','approved','deleted','actionable']).optional()}),
   moderation_decide: z.object({id,decision:z.enum(['approve','delete']),reason:z.string().trim().min(2,'请填写处理原因').max(1000)}),
   moderation_appeal: z.object({id,reason:z.string().trim().min(2,'请说明申诉理由').max(1000)}),
   moderation_retry: z.object({id}),

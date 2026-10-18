@@ -6,14 +6,17 @@ import { query } from './db';
 import { config } from './config';
 import { fail } from '../shared/contracts';
 import { sendSmsMessage } from './sms';
-export async function consumeQuota(key:string,limit:number) {
+export async function consumeQuota(key:string,limit:number,message='当前处理额度已用完，请稍后重试') {
   const rows=await query(`INSERT INTO usage_counters(key,count) VALUES($1,1) ON CONFLICT(key) DO UPDATE SET count=usage_counters.count+1,updated_at=now() WHERE usage_counters.count<$2 RETURNING count`,[key,limit]);
-  if(!rows.length) fail(429,'当前处理额度已用完，请稍后重试','QUOTA_EXCEEDED');
+  if(!rows.length) fail(429,message,'QUOTA_EXCEEDED');
 }
+export const SMS_PHONE_DAILY_LIMIT=10;
 export async function sendSms(phone:string,code:string) {
+  // Counters are keyed by UTC date, so they reset at 08:00 Beijing time.
   const day=new Date().toISOString().slice(0,10);
-  await consumeQuota(`sms:${day}`,Number(process.env.SMS_DAILY_LIMIT||100));
-  await consumeQuota(`sms:${day}:${phone}`,10);
+  // Check the number first: one number retrying must not use up the shared quota.
+  await consumeQuota(`sms:${day}:${phone}`,SMS_PHONE_DAILY_LIMIT,`这个手机号今天获取验证码的次数已达上限（每天 ${SMS_PHONE_DAILY_LIMIT} 次），请在北京时间早上 8 点后再试`);
+  await consumeQuota(`sms:${day}`,Number(process.env.SMS_DAILY_LIMIT||100),'今天的短信验证码发送量已达上限，请在北京时间早上 8 点后再试，或联系社区管理员');
   if(config.dev) {
     await query(`INSERT INTO usage_counters(key,count) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET count=$2,updated_at=now()`,[`dev-otp:${phone}`,Number(code)]);return;
   }

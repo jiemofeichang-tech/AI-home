@@ -9,8 +9,9 @@ async function call(action:Action,input:unknown){
   }catch(e){console.error(JSON.stringify({error:(e as Error).message}));process.exitCode=1;}
 }
 program.command('search <query>').option('--type <type>','all / posts / github / communities / events','all').option('--city <city>').action((q,opts)=>call('search',{q,type:opts.type,city:opts.city}));
-program.command('feed').option('--community <id>').option('--limit <n>','每页条数','20').action(opts=>call('posts_list',{communityId:opts.community,limit:Number(opts.limit)}));
-const posts=program.command('posts');posts.command('get <id>').action(id=>call('posts_get',{id}));posts.command('create').option('--body <text>').option('--file <path>','从 UTF-8 文件读取正文').option('--link <url...>').option('--community <id>').option('--original <id>').option('--key <key>','幂等键').action(async opts=>call('posts_create',{body:opts.file?await readFile(opts.file,'utf8'):opts.body||'',links:opts.link||[],communityId:opts.community,originalId:opts.original,idempotencyKey:opts.key}));
+program.command('feed').option('--community <id>').option('--topic <id>','只看某个板块').option('--limit <n>','每页条数','20').action(opts=>call('posts_list',{communityId:opts.community,topicId:opts.topic,limit:Number(opts.limit)}));
+program.command('topics').description('列出社区板块及能否发布').action(()=>call('topics_list',{}));
+const posts=program.command('posts');posts.command('get <id>').action(id=>call('posts_get',{id}));posts.command('create').option('--title <text>','可选标题').option('--body <text>').option('--file <path>','从 UTF-8 文件读取正文').option('--topic <id>','发布到的板块 ID，不能与 --community 同时使用').option('--link <url...>').option('--community <id>').option('--original <id>').option('--key <key>','幂等键').action(async opts=>call('posts_create',{title:opts.title||'',body:opts.file?await readFile(opts.file,'utf8'):opts.body||'',topicId:opts.topic,links:opts.link||[],communityId:opts.community,originalId:opts.original,idempotencyKey:opts.key}));
 program.command('comment <postId> <body>').option('--key <key>').action((id,body,opts)=>call('comments_create',{id,body,idempotencyKey:opts.key}));
 program.command('bookmark <postId>').option('--remove').action((id,opts)=>call('reactions_set',{id,kind:'bookmark',active:!opts.remove}));
 program.command('communities').option('--city <city>').action(opts=>call('communities_list',opts));

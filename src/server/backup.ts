@@ -7,6 +7,7 @@ import type { Pool } from 'pg';
 import { getObject,putObject } from './storage';
 
 type Manifest={version:2;createdAt:string;tables:{name:string;file:string;rows:number;sha256:string}[];objects:{key:string;file:string;mime:string;sha256:string}[]};
+const migrationSeeded=['topics'];
 const ident=(s:string)=>{if(!/^[a-zA-Z_][\w]*$/.test(s))throw new Error('Unsafe identifier');return `"${s}"`;};
 const safePath=(root:string,file:string)=>{const absolute=path.resolve(root,file);if(!absolute.startsWith(path.resolve(root)+path.sep))throw new Error('Invalid backup path');return absolute;};
 async function fileHash(file:string){const hash=createHash('sha256');for await(const chunk of createReadStream(file))hash.update(chunk);return hash.digest('hex');}
@@ -52,7 +53,10 @@ export async function restoreBackup(directory:string,pool:Pool,writeObject=putOb
     // This CLI-only, transaction-local flag permits restoring closed-account
     // placeholders. Foreign keys and all other integrity checks remain active.
     await client.query("SET LOCAL app.privacy_restore = 'on'");
-    for(const table of manifest.tables){await client.query(`LOCK TABLE ${ident(table.name)} IN ACCESS EXCLUSIVE MODE`);if(table.name==='schema_migrations')continue;const {rows}=await client.query(`SELECT count(*)::int AS count FROM ${ident(table.name)}`);if(rows[0].count)throw new Error(`Restore refused: target table ${table.name} is not empty. Use a fresh database.`);}
+    for(const table of manifest.tables){await client.query(`LOCK TABLE ${ident(table.name)} IN ACCESS EXCLUSIVE MODE`);if(table.name==='schema_migrations'||migrationSeeded.includes(table.name))continue;const {rows}=await client.query(`SELECT count(*)::int AS count FROM ${ident(table.name)}`);if(rows[0].count)throw new Error(`Restore refused: target table ${table.name} is not empty. Use a fresh database.`);}
+    // Migrations seed default rows; once every other table is confirmed empty,
+    // the snapshot's copy (including administrator edits) replaces them.
+    for(const name of migrationSeeded)if(manifest.tables.some(table=>table.name===name))await client.query(`DELETE FROM ${ident(name)}`);
     // The fresh target was migrated before restore. Keep its migration record
     // even when restoring an older snapshot that predates a privacy column.
     let totalRows=0;

@@ -66,8 +66,12 @@ async function upload(actor:Actor=author) {
 async function pendingPost(body:string,actor:Actor=author,extra:Record<string,unknown>={}) {
   const post=await execute('posts_create',{body,...extra},actor);assert.equal(post.moderationStatus,'pending');assert.ok(post.id);return post;
 }
-async function invisible(id:string,marker:string,actor:Actor={}) {
-  await assert.rejects(execute('posts_get',{id},actor));
+async function invisible(id:string,marker:string,actor:Actor=outsider) {
+  if(!actor.userId) {
+    for(const [action,params] of [['posts_get',{id}],['posts_list',{}],['search',{q:marker,type:'posts'}]] as const)await assert.rejects(execute(action,params,actor),{status:401});
+    return;
+  }
+  await assert.rejects(execute('posts_get',{id},actor),(error:any)=>[403,404].includes(error.status));
   assert.equal(JSON.stringify(await execute('posts_list',{},actor)).includes(marker),false);
   assert.equal(JSON.stringify(await execute('search',{q:marker,type:'posts'},actor)).includes(marker),false);
 }
@@ -89,8 +93,10 @@ test('pending posts and attached images stay out of public reads, search, reacti
   for(const actor of [author,reviewer])assert.equal((await request(`moderation/media/${image.id}`,'GET',undefined,headers(actor))).status,200);
   for(const authHeaders of [{},headers(owner),headers(outsider),{Authorization:`Bearer ${authorGrant.token}`},{Authorization:`Bearer ${reviewerGrant.token}`}])await denied(await request(`moderation/media/${image.id}`,'GET',undefined,authHeaders));
   await approve(post.id);
-  assert.equal((await execute('posts_get',{id:post.id},{})).body,marker);assert.equal((await request(`media/${image.id}`)).status,200);
-  assert.ok((await execute('search',{q:marker,type:'posts'},{})).posts.some((value:any)=>value.id===post.id));
+  assert.equal((await execute('posts_get',{id:post.id},outsider)).body,marker);assert.equal((await request(`media/${image.id}`,'GET',undefined,headers(outsider))).status,200);
+  assert.ok((await execute('search',{q:marker,type:'posts'},outsider)).posts.some((value:any)=>value.id===post.id));
+  await invisible(post.id,marker,{});
+  for(const method of ['GET','HEAD'])assert.equal((await request(`media/${image.id}`,method)).status,401);
 });
 
 test('only a person can see their own queue and platform administrators can review private content without publishing it',async()=>{
@@ -119,12 +125,12 @@ test('comments remain absent from threads until separately approved and removed 
   const marker='PENDING-COMMENT-PRIVATE-MARKER';
   const comment=await execute('comments_create',{id:post.id,body:marker},outsider);assert.equal(comment.moderationStatus,'pending');
   const item=await caseFor(comment.id,'comment');
-  for(const actor of [{},author,outsider,reviewer] as Actor[])assert.equal(JSON.stringify(await execute('posts_get',{id:post.id},actor)).includes(marker),false);
-  assert.equal(JSON.stringify(await execute('search',{q:marker,type:'posts'},{})).includes(marker),false);
+  for(const actor of [author,outsider,reviewer] as Actor[])assert.equal(JSON.stringify(await execute('posts_get',{id:post.id},actor)).includes(marker),false);
+  assert.equal(JSON.stringify(await execute('search',{q:marker,type:'posts'},outsider)).includes(marker),false);
   await moderationDecide(reviewer,{id:item.id,decision:'approve',reason:'评论审核通过'});
-  assert.ok((await execute('posts_get',{id:post.id},{})).comments.some((value:any)=>value.id===comment.id&&value.body===marker));
+  assert.ok((await execute('posts_get',{id:post.id},outsider)).comments.some((value:any)=>value.id===comment.id&&value.body===marker));
   await moderationDecide(reviewer,{id:item.id,decision:'delete',reason:'评论应予移除'});
-  assert.equal(JSON.stringify(await execute('posts_get',{id:post.id},{})).includes(marker),false);
+  assert.equal(JSON.stringify(await execute('posts_get',{id:post.id},outsider)).includes(marker),false);
   await assert.rejects(moderationDecide(reviewer,{id:item.id,decision:'approve',reason:'不得恢复终态'}));
   await assert.rejects(moderationAppeal(outsider,{id:item.id,reason:'已删除内容不得恢复'}));
   const late=await execute('comments_create',{id:post.id,body:'原帖删除后不得放行的评论'},outsider),lateCase=await caseFor(late.id,'comment');
@@ -182,10 +188,10 @@ test('unavailable moderation keeps content private and authors can appeal a reje
     await success(await request(`moderation/${failedCase.id}/appeal`,'POST',{reason:'请人工结合上下文复核'},headers(author)));
     const appealed=await caseFor(failed.id);assert.equal(appealed.status,'review');assert.equal(appealed.appeal_reason,'请人工结合上下文复核');
     assert.ok((await moderationList(reviewer,{status:'review'})).items.every((entry:any)=>entry.status==='review'));
-    await moderationDecide(reviewer,{id:failedCase.id,decision:'approve',reason:'人工复核允许发布'});assert.equal((await execute('posts_get',{id:failed.id},{})).body,'PROVIDER-FAILURE-MARKER');
+    await moderationDecide(reviewer,{id:failedCase.id,decision:'approve',reason:'人工复核允许发布'});assert.equal((await execute('posts_get',{id:failed.id},outsider)).body,'PROVIDER-FAILURE-MARKER');
     globalThis.fetch=async(_url,init)=>{const form=new URLSearchParams(String(init?.body));const params=JSON.parse(form.get('ServiceParameters')!);return Response.json({Code:200,Data:{DataId:params.dataId,RiskLevel:'none',Result:[{Label:'nonLabel'}]}});};
     const automatic=await pendingPost('AUTOMATICALLY-APPROVED-MARKER'),automaticCase=await caseFor(automatic.id);await processModeration(automaticCase.id);
-    assert.equal((await caseFor(automatic.id)).status,'approved');assert.equal((await execute('posts_get',{id:automatic.id},{})).body,'AUTOMATICALLY-APPROVED-MARKER');
+    assert.equal((await caseFor(automatic.id)).status,'approved');assert.equal((await execute('posts_get',{id:automatic.id},outsider)).body,'AUTOMATICALLY-APPROVED-MARKER');
   } finally {globalThis.fetch=previousFetch;for(const [key,value] of previous){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 });
 
@@ -263,5 +269,5 @@ test('closing a reviewer erases their decision reasons while retaining the manua
   const closed=await caseFor(post.id);assert.equal(closed.status,'approved');assert.equal(closed.reviewed_by,departing.userId);assert.equal(closed.reason.includes(marker),false);
   const history=await query('SELECT actor_id,reason FROM moderation_history WHERE case_id=$1',[item.id]);assert.ok(history.length);assert.equal(JSON.stringify(history).includes(marker),false);assert.equal(history.some((entry:any)=>entry.actor_id===departing.userId),false);
   const {moderationRevisionForPost}=await import('../src/server/moderation');assert.equal(await moderationRevisionForPost(post.id),null);
-  await processModeration(item.id);assert.equal((await caseFor(post.id)).reviewed_by,departing.userId);assert.equal((await execute('posts_get',{id:post.id},{})).body,'REVIEWER-CLOSURE-AUTHOR-CONTENT');
+  await processModeration(item.id);assert.equal((await caseFor(post.id)).reviewed_by,departing.userId);assert.equal((await execute('posts_get',{id:post.id},outsider)).body,'REVIEWER-CLOSURE-AUTHOR-CONTENT');
 });

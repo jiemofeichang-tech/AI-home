@@ -22,7 +22,9 @@
 
 动态、评论、图片和活动提交后返回 `moderationStatus: "pending"`，表示已收件等待审核，不表示已经公开。通过前 `posts_get`、列表、搜索、附件直链不能读取；作者在网页 `/moderation` 查看进度和申诉，Agent 不具备审核队列、审核图片预览或批准权限。活动回顾修改也先审后展示；取消活动立即生效。详见 [审核规则](moderation.md)。
 
-常用路径：`GET /posts`、`GET /posts/:id`、`POST /posts`、`GET /search?q=...`、`GET /communities`、`GET /events`、`PUT /events/:id/rsvp`。
+常用路径：`GET /posts`、`GET /posts?topicId=projects`、`GET /posts/:id`、`POST /posts`、`GET /topics`、`GET /topics/:id`、`GET /search?q=...`、`GET /communities`、`GET /events`、`PUT /events/:id/rsvp`。
+
+板块：`GET /topics` 列出未归档板块、简介、帖子数，以及当前用户（或 Agent）能否发布（`canPost`）。发帖时 `topicId` 指定板块、`title` 为可选标题（最多 120 字）；板块帖子是公开动态，`topicId` 不能与 `communityId` 同时使用。“社区公告”等仅管理员可发布的板块只接受平台管理员本人在网页发布，Agent 代发会被拒绝。标题与正文一起接受内容安全审核，并参与搜索。新建、修改和归档板块（`POST /admin/topics`）仅限平台管理员本人网页会话。
 
 线下活动预约必须提供姓名 `attendeeName`、手机号 `phoneNumber` 和 `contactConsent: true`。只有明确获得本人同意将联系人资料用于活动联系和签到后，才能将 `contactConsent` 设为 `true`；Agent 不能代替用户作出同意，也不能把一般的报名授权推定为已经同意处理联系方式。手机号支持中国大陆 11 位号码或 `+86` 前缀，服务端统一保存为 `+86` 格式。姓名和手机号仅活动所属社群的真人管理员可查看，不会出现在公开活动列表、公开个人资料或普通成员看到的报名名单中，Agent 无联系人名单读取权限。
 
@@ -72,6 +74,9 @@ npm run cli -- feed --json
 npm run cli -- search 'Agent' --json
 npm run cli -- posts get '<post-id>' --json
 npm run cli -- posts create --file .\post.txt --link https://github.com/modelcontextprotocol/typescript-sdk --key '<唯一请求键>'
+npm run cli -- topics --json
+npm run cli -- feed --topic projects --json
+npm run cli -- posts create --title '周末做的小工具' --file .\post.txt --topic projects --key '<唯一请求键>'
 npm run cli -- events list --city 杭州 --json
 npm run cli -- events rsvp '<event-id>' --name '张三' --phone '13800000002' --contact-consent
 npm run cli -- events rsvp '<event-id>' --cancel
@@ -96,7 +101,7 @@ npm run cli -- events rsvp '<event-id>' --cancel
 
 客户端先动态注册或使用已有客户端 ID，浏览器登录后进入同意页面，选择可访问社群。API 和 MCP 的资源受众分别为 `/api/v1`、`/mcp`，不能混用 OAuth access token。撤销社区授权会使该授权绑定的访问令牌立即失效，并清除相关刷新令牌和同意记录。
 
-工具：`posts_list`、`posts_get`、`posts_create`、`comments_create`、`reactions_set`、`communities_list`、`communities_get`、`events_list`、`events_get`、`events_create`、`events_rsvp`、`events_update`、`search`、`profile_get`。资源模板：`community://posts/{id}`。
+工具：`posts_list`、`posts_get`、`posts_create`、`comments_create`、`reactions_set`、`topics_list`、`topics_get`、`communities_list`、`communities_get`、`events_list`、`events_get`、`events_create`、`events_rsvp`、`events_update`、`search`、`profile_get`。资源模板：`community://posts/{id}`。
 
 `events_rsvp` 使用上面的预约或取消参数。预约前需向用户获取姓名、手机号及明确的联系人处理同意，再传入 `contactConsent: true`；取消时传入 `id` 与 `attending: false` 即可。活动报名联系信息仅活动所属社群的真人管理员可查看，不能由 Agent 读取。图片 AI 处理同样遵循 `posts_create.imageAnalysisConsent` 的单独同意规则。
 

@@ -10,20 +10,22 @@ export async function seed(){
   await query(`INSERT INTO memberships(community_id,user_id,role,status) VALUES('hangzhou','demo-qiao','member','active'),('hangzhou','demo-xu','member','active'),('shanghai','demo-lin','member','active'),('workshop','demo-qiao','member','active')`);
   await query(`UPDATE communities SET announcement='欢迎加入！发帖时可以带上你用到的工具、过程和真实体验。这里的初始帖子是本地演示数据。' WHERE id='hangzhou'`);
   const posts=[
-    ['welcome','demo-lin',null,'欢迎来到 AI 社区 👋\n\n这里想聚集一小群真正用 AI 做事的人。可以分享一个刚发现的工具、一段踩坑经历，或者你正在做的作品。\n\n先从一个问题开始：最近，AI 帮你完成的最有成就感的一件事是什么？\n\n[本地演示内容]',['社区日常'],'20 minutes'],
-    ['mcp-project','demo-xu',null,'给正在搭建 Agent 的朋友分享一个开源项目。\n\nMCP 的官方 TypeScript SDK，把工具、资源和客户端连接的例子放在了一起。准备在周末做一个读取社区内容的小助手。\n\n有人想一起试试吗？ #Agent #开源\n\n[本地演示内容]',['Agent','开源'],'2 hours'],
-    ['hangzhou-meet','demo-qiao','hangzhou','不如这个周末，我们各自带一个小想法，现场用 AI 做出来？\n\n不用准备完整的分享，也不用是技术大神。一个你觉得“要是有这个就好了”的问题就够了。\n\n#杭州 #一起做点东西\n\n[本地演示内容]',['杭州','一起做点东西'],'4 hours'],
-    ['workflow','demo-chen',null,'最近在记录自己的 AI 工作流，发现最值得分享的往往不是最后那张漂亮的图，而是中间改了什么、为什么改。\n\n所以想开一个「过程分享」话题：贴上你的尝试，我们一起讨论。 #创作 #工作流\n\n[本地演示内容]',['创作','工作流'],'8 hours']
+    ['welcome','demo-lin',null,'announcements','欢迎来到 AI 社区：新朋友请从这里开始','这里想聚集一小群真正用 AI 做事的人。可以分享一个刚发现的工具、一段踩坑经历，或者你正在做的作品。\n\n第一次来？先去「从这里开始」完成新人任务：完善资料、发一条自我介绍、加入同城社群。\n\n也可以先回答一个问题：最近，AI 帮你完成的最有成就感的一件事是什么？\n\n[本地演示内容]',['社区日常'],'20 minutes'],
+    ['mcp-project','demo-xu',null,'resources','MCP 官方 TypeScript SDK：周末做个读社区内容的小助手','给正在搭建 Agent 的朋友分享一个开源项目。\n\nMCP 的官方 TypeScript SDK，把工具、资源和客户端连接的例子放在了一起。准备在周末做一个读取社区内容的小助手。\n\n有人想一起试试吗？ #Agent #开源\n\n[本地演示内容]',['Agent','开源'],'2 hours'],
+    ['hangzhou-meet','demo-qiao','hangzhou',null,'','不如这个周末，我们各自带一个小想法，现场用 AI 做出来？\n\n不用准备完整的分享，也不用是技术大神。一个你觉得“要是有这个就好了”的问题就够了。\n\n#杭州 #一起做点东西\n\n[本地演示内容]',['杭州','一起做点东西'],'4 hours'],
+    ['workflow','demo-chen',null,'projects','过程分享：我把 AI 工作流的每一次修改都记了下来','最近在记录自己的 AI 工作流，发现最值得分享的往往不是最后那张漂亮的图，而是中间改了什么、为什么改。\n\n所以想开一个「过程分享」话题：贴上你的尝试，我们一起讨论。 #创作 #工作流\n\n[本地演示内容]',['创作','工作流'],'8 hours'],
+    ['intro-qiao','demo-qiao',null,'introductions','大家好，我是乔乔 👋','📍 所在城市：杭州\n💼 在做什么：内容创作者，平时记录旅行和美食\n🤖 最近在用 AI 做什么：整理照片、写游记初稿\n🙋 希望在社区找到：一起做小工具的朋友，也想学点 Agent 的玩法\n\n[本地演示内容]',[],'1 day'],
+    ['question-chen','demo-chen',null,'questions','Cursor 和 Claude Code 搭配使用，大家怎么分工？','最近两个都在用：Cursor 写界面，Claude Code 跑重构和测试。但上下文经常要重复交代，有没有更顺的工作方式？\n\n欢迎分享你的配置和习惯。 #AI编程\n\n[本地演示内容]',['AI编程'],'1 day 3 hours']
   ];
-  for(const [id,author,community,body,tags,age] of posts) await query(`INSERT INTO posts(id,author_id,community_id,body,tags,created_at,moderation_status) VALUES($1,$2,$3,$4,$5,now()-$6::interval,'approved')`,[id,author,community,body,tags,age]);
+  for(const [id,author,community,topic,title,body,tags,age] of posts) await query(`INSERT INTO posts(id,author_id,community_id,topic_id,title,body,tags,created_at,moderation_status) VALUES($1,$2,$3,$4,$5,$6,$7,now()-$8::interval,'approved')`,[id,author,community,topic,title,body,tags,age]);
   await query(`INSERT INTO link_resources(id,post_id,url,platform,status) VALUES('demo-mcp-link','mcp-project','https://github.com/modelcontextprotocol/typescript-sdk','github','pending')`);
   await query(`INSERT INTO jobs(id,kind,target_id) VALUES('seed-link','link','demo-mcp-link')`);
-  await query(`INSERT INTO comments(id,post_id,author_id,body,moderation_status) VALUES('demo-comment','welcome','demo-qiao','我用 AI 做了一个旅行照片整理工具！期待在这里分享过程。','approved')`);
+  await query(`INSERT INTO comments(id,post_id,author_id,body,moderation_status) VALUES('demo-comment','welcome','demo-qiao','我用 AI 做了一个旅行照片整理工具！期待在这里分享过程。','approved'),('demo-comment-2','intro-qiao','demo-lin','欢迎乔乔！照片整理工具做好了一定要发到「项目展示」，大家一起试用。','approved')`);
   await query(`INSERT INTO moderation_cases(id,target_type,target_id,author_id,status,labels,provider)
     SELECT gen_random_uuid()::text,'post',id,author_id,'approved',ARRAY['legacy'],'legacy' FROM posts WHERE id=ANY($1::text[])`,[posts.map(post=>post[0])]);
   await query(`INSERT INTO moderation_cases(id,target_type,target_id,author_id,status,labels,provider)
-    SELECT gen_random_uuid()::text,'comment',id,author_id,'approved',ARRAY['legacy'],'legacy' FROM comments WHERE id='demo-comment'`);
-  await query(`INSERT INTO reactions(post_id,user_id,kind) VALUES('welcome','demo-xu','like'),('welcome','demo-qiao','like'),('mcp-project','demo-lin','like')`);
+    SELECT gen_random_uuid()::text,'comment',id,author_id,'approved',ARRAY['legacy'],'legacy' FROM comments WHERE id IN ('demo-comment','demo-comment-2')`);
+  await query(`INSERT INTO reactions(post_id,user_id,kind) VALUES('welcome','demo-xu','like'),('welcome','demo-qiao','like'),('mcp-project','demo-lin','like'),('mcp-project','demo-chen','like'),('workflow','demo-xu','like'),('intro-qiao','demo-chen','like')`);
   for(const [id,c,owner,title,desc,city,address,days,capacity] of [['demo-hz-event','hangzhou','demo-lin','周末 AI 共创小聚','带上电脑和一个小想法，一起把它变成可以运行的作品。\n流程：自我介绍 → 两小时共创 → 展示和交流。\n[本地演示活动，不是真实活动邀约]','杭州','演示地址：杭州创作空间，报名后可见',5,20],['demo-sh-event','shanghai','demo-xu','Agent 工作流交流夜','交流已经跑起来的 Agent 工作流，也讨论尚未解决的问题。\n[本地演示活动，不是真实活动邀约]','上海','演示地址：上海开放工坊，报名后可见',8,15]]) {
     await query(`INSERT INTO events(id,community_id,organizer_id,title,description,city,address,starts_at,ends_at,capacity) VALUES($1,$2,$3,$4,$5,$6,$7,now()+($8||' days')::interval,now()+($8||' days')::interval+interval '3 hours',$9)`,[id,c,owner,title,desc,city,address,String(days),capacity]);
   }

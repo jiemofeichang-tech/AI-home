@@ -70,7 +70,7 @@ async function readTarget(entry:Case,client?:PoolClient):Promise<Target|undefine
   const links=await query('SELECT url FROM link_resources WHERE post_id=$1 ORDER BY id',[row.id],client);
   const bodyUrls=new Set(extractWebUrls(row.body).map(url=>new URL(url).href));
   return {author_id:row.author_id,deleted_at:row.deleted_at,moderation_status:row.moderation_status,community_id:row.community_id,
-    text:[row.body,row.agent_name||'',...links.map(link=>link.url).filter(url=>!bodyUrls.has(new URL(url).href))].filter(Boolean).join('\n'),linkUrls:links.map(link=>link.url),
+    text:[row.title,row.body,row.agent_name||'',...links.map(link=>link.url).filter(url=>!bodyUrls.has(new URL(url).href))].filter(Boolean).join('\n'),linkUrls:links.map(link=>link.url),
     images:media.filter(item=>!isVideoMime(item.mime)).map(image=>({id:image.id,storageKey:image.storage_key,mime:image.mime})),
     videos:media.filter(item=>isVideoMime(item.mime)).map(video=>({id:video.id,mime:video.mime}))};
 }

@@ -267,3 +267,52 @@ test('ADMIN_PHONE bootstraps only an empty administrator set and later invited r
     if(previousAdminPhone===undefined)delete process.env.ADMIN_PHONE;else process.env.ADMIN_PHONE=previousAdminPhone;
   }
 });
+
+test('exhausted SMS quotas return a clear 429, and a refused number leaves the shared quota untouched',async()=>{
+  const day=new Date().toISOString().slice(0,10),phoneKey=`sms:${day}:${memberPhone}`,sharedKey=`sms:${day}`;
+  const previous=await smsUsage();
+  try {
+    await query('INSERT INTO usage_counters(key,count) VALUES($1,10) ON CONFLICT(key) DO UPDATE SET count=10',[phoneKey]);
+    const before=await smsUsage();
+    let response=await authRequest('/phone-number/send-otp',{phoneNumber:memberPhone});let body=await response.json();
+    assert.equal(response.status,429,JSON.stringify(body));assert.equal(body.code,'QUOTA_EXCEEDED');
+    assert.match(body.message,/这个手机号今天获取验证码的次数已达上限/);
+    assert.deepEqual(await smsUsage(),before,'A number over its own limit must not consume the shared daily quota');
+    await query('DELETE FROM usage_counters WHERE key=$1',[phoneKey]);
+    await query('INSERT INTO usage_counters(key,count) VALUES($1,1000) ON CONFLICT(key) DO UPDATE SET count=1000',[sharedKey]);
+    response=await authRequest('/phone-number/send-otp',{phoneNumber:memberPhone});body=await response.json();
+    assert.equal(response.status,429,JSON.stringify(body));assert.equal(body.code,'QUOTA_EXCEEDED');
+    assert.match(body.message,/今天的短信验证码发送量已达上限/);
+  } finally {
+    await query("DELETE FROM usage_counters WHERE key LIKE 'sms:%'");
+    for(const row of previous)await query('INSERT INTO usage_counters(key,count) VALUES($1,$2)',[row.key,row.count]);
+  }
+});
+
+function authFrom(ip:string,endpoint:string,body:Record<string,unknown>):Promise<Response> {
+  return auth.handler(new Request(`${base}/api/auth${endpoint}`,{
+    method:'POST',headers:{Origin:base,'Content-Type':'application/json','X-Privacy-Version':PRIVACY_VERSION,'X-Forwarded-For':ip},body:JSON.stringify(body)
+  }));
+}
+
+test('rate limits and verification failures explain the cause in Chinese',async()=>{
+  const sendIp='198.51.100.77';
+  for(let index=0;index<10;index++) {
+    const response=await authFrom(sendIp,'/phone-number/send-otp',{phoneNumber:`+86139010009${String(index).padStart(2,'0')}`});
+    assert.equal(response.status,403,'Refused new numbers still count toward the per-network limit');
+  }
+  const limited=await authFrom(sendIp,'/phone-number/send-otp',{phoneNumber:adminPhone});const limitedBody=await limited.json();
+  assert.equal(limited.status,429,JSON.stringify(limitedBody));assert.equal(limitedBody.code,'RATE_LIMITED');
+  assert.match(limitedBody.message,/^获取验证码太频繁：同一网络 1 分钟内最多获取 10 次，请 (\d+ 秒|1 分钟)后再试$/);
+  assert.ok(limitedBody.retryAfter>=1&&limitedBody.retryAfter<=60,`retryAfter ${limitedBody.retryAfter} must stay within the 60-second window`);
+  assert.equal(limited.headers.get('retry-after'),String(limitedBody.retryAfter));
+
+  const verifyIp='198.51.100.78';
+  assert.equal((await authFrom(verifyIp,'/phone-number/send-otp',{phoneNumber:adminPhone})).status,200,'Sending and verifying are limited separately');
+  const [otp]=await query('SELECT count FROM usage_counters WHERE key=$1',[`dev-otp:${adminPhone}`]);
+  const wrong=String(otp.count).padStart(6,'0')==='000000'?'111111':'000000';
+  let response=await authFrom(verifyIp,'/phone-number/verify',{phoneNumber:adminPhone,code:wrong});let body=await response.json();
+  assert.equal(body.code,'INVALID_OTP');assert.equal(body.message,'验证码不正确，请检查后重新输入');
+  for(let attempt=0;attempt<6&&body.code==='INVALID_OTP';attempt++){response=await authFrom(verifyIp,'/phone-number/verify',{phoneNumber:adminPhone,code:wrong});body=await response.json();}
+  assert.equal(body.code,'TOO_MANY_ATTEMPTS');assert.equal(body.message,'验证码输错已达 5 次，这个验证码已作废，请重新获取');
+});

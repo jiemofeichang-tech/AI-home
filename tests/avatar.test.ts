@@ -156,7 +156,7 @@ test('avatar claims reject foreign and attached media and cannot race with post 
 test('profile, post, comment, community and admin user responses consistently expose the approved image',async()=>{
   const post=await execute('posts_create',{body:'头像一致性动态'},author);await approve((await caseFor(post.id)).id);
   const comment=await execute('comments_create',{id:post.id,body:'头像一致性评论'},author);await approve(comment.moderationId);
-  const view=await execute('posts_get',{id:post.id},{});assert.equal(view.author.image,`/api/v1/media/${currentId}`);assert.equal(view.comments[0].image,view.author.image);
+  const view=await execute('posts_get',{id:post.id},other);assert.equal(view.author.image,`/api/v1/media/${currentId}`);assert.equal(view.comments[0].image,view.author.image);
   const group=await execute('communities_create',{name:'头像显示社群',description:'测试成员头像',city:'杭州',visibility:'public'},admin);await approve(group.moderationId);
   await execute('communities_join',{id:group.id},author);
   assert.equal((await execute('communities_members',{id:group.id},author)).items.find((item:any)=>item.id===author.userId).image,view.author.image);
