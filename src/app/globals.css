@@ -268,7 +268,20 @@ a.quote:hover{border-color:var(--line-strong);border-left-color:var(--brand)}
 .composer-author select{font-size:12px;padding:3px 10px;background:var(--subtle);border:1px solid var(--line);border-radius:999px;max-width:220px;color:var(--muted)}
 .title-input{width:100%;border:0;border-radius:0;padding:16px 0 4px;font-size:19px;font-weight:650;box-shadow:none!important;letter-spacing:-.01em}
 .title-input::placeholder{font-weight:500;font-size:16px}
-.write-area{width:100%;min-height:150px;padding:10px 0 12px;border:0;box-shadow:none!important;font-size:15px;resize:vertical;line-height:1.8}
+.write-area{width:100%;min-height:120px;padding:10px 0 12px;border:0;box-shadow:none!important;font-size:15px;resize:vertical;line-height:1.8}
+.dropzone{display:grid;justify-items:center;gap:6px;margin:4px 0 6px;padding:18px 16px;border:1.5px dashed var(--line-strong);border-radius:14px;background:var(--subtle);text-align:center;transition:border-color .15s,background .15s}
+.dropzone>svg{color:var(--brand)}
+.dropzone p{margin:0;font-size:13px;line-height:1.7;color:var(--text)}
+.dropzone p .text-button{padding:0;font-size:13px}
+.dropzone small{font-size:12px;line-height:1.6;color:var(--faint)}
+.dropzone.active,.drop-target{border-color:var(--brand)!important;background:var(--brand-soft)}
+.dropzone.active p{color:var(--brand-ink);font-weight:600}
+.media-tray{margin:4px 0 6px;padding:4px 12px 8px;border:1.5px dashed transparent;border-radius:14px;transition:border-color .15s,background .15s}
+.media-tray .upload-button{margin-top:2px;padding-left:0}
+.composer-footer{position:sticky;bottom:-24px;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px -24px -24px;padding:12px 24px 16px;background:var(--surface);border-top:1px solid var(--line)}
+.composer-tools{display:flex;gap:2px}
+.composer-tools .icon-btn{width:38px;height:38px}
+.composer-tools .icon-btn:disabled{opacity:.35}
 .upload-button{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;font-weight:500;cursor:pointer;padding:7px 10px;border-radius:10px;transition:color .15s,background .15s}
 .upload-button:hover{color:var(--ink);background:var(--hover)}
 .upload-button svg{width:18px;height:18px}
@@ -544,6 +557,9 @@ a.quote:hover{border-color:var(--line-strong);border-left-color:var(--brand)}
   .toast{bottom:92px;width:max-content;padding:10px 18px}
   .modal{padding:20px;max-height:86vh;border-radius:20px}
   .modal-head h2{font-size:17px}
+  .composer-footer{bottom:-20px;margin:12px -20px -20px;padding:10px 20px 14px}
+  .dropzone{padding:16px 12px}
+  .dropzone small{display:none}
   .form-grid{grid-template-columns:1fr;gap:0}
   .form-grid .field{margin:12px 0}
   .login-card{margin:20px auto;padding:28px 20px 22px;border-radius:20px}

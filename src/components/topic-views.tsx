@@ -75,7 +75,7 @@ export function TopicStrip({topics,active}:{topics:Item[];active?:string}) {
   const items=topics.filter(topic=>!topic.archived_at);
   if(!items.length)return null;
   return <nav className={styles.strip} aria-label="社区板块">
-    <Link href="/topics" className={!active?styles.stripActive:''}>全部板块</Link>
+    <Link href="/topics" className={active==='all'?styles.stripActive:''}>全部板块</Link>
     {items.map(topic=><Link key={topic.id} href={`/topics/${topic.slug}`} className={active===topic.id?styles.stripActive:''}><span aria-hidden="true">{topic.icon}</span>{topic.name}</Link>)}
   </nav>;
 }

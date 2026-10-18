@@ -1,9 +1,9 @@
 'use client';
-import { useCallback,useEffect,useRef,useState,type FormEvent,type ReactNode } from 'react';
+import { useCallback,useEffect,useRef,useState,type ClipboardEvent,type DragEvent,type FormEvent,type ReactNode } from 'react';
 import Link from 'next/link';
 import { flushSync } from 'react-dom';
 import { usePathname,useRouter } from 'next/navigation';
-import { Home,UserRound,Users,CalendarDays,Bot,Bell,Search,Plus,ArrowUpRight,MessageCircle,Heart,Repeat2,Bookmark,ImagePlus,Video,Link2,X,MapPin,Clock,ChevronRight,Lock,Globe,Check,Copy,RefreshCw,ExternalLink,Ellipsis,ArrowLeft,Code2,Terminal,Send,CheckCircle2,LayoutGrid } from 'lucide-react';
+import { Home,UserRound,Users,CalendarDays,Bot,Bell,Search,Plus,ArrowUpRight,MessageCircle,Heart,Repeat2,Bookmark,ImagePlus,Video,Link2,X,MapPin,Clock,ChevronRight,Lock,Globe,Check,Copy,RefreshCw,ExternalLink,Ellipsis,ArrowLeft,Code2,Terminal,Send,CheckCircle2,LayoutGrid,UploadCloud } from 'lucide-react';
 import { contracts,scopeLabels,scopes,type Item,type Action } from '@/shared/contracts';
 import { extractWebUrls } from '@/shared/links';
 import { InvitationManager } from './invitation-manager';
@@ -173,7 +173,7 @@ export default function CommunityApp(){
     {error&&section!=='discover'?<div className="error-banner"><p>{error}</p>{!me?<Link href="/login">前往登录</Link>:<button onClick={refresh}>重试</button>}</div>:loading&&section!=='discover'?<div className="loading"><span className="spinner"/>正在加载…</div>:<>
       {section==='home'&&<><TopicStrip topics={topics}/><div className="composer-card"><div className="composer-preview"><Avatar image={me?.image} name={me?.name||'我'}/><button onClick={()=>createPost()}>有什么新的发现？和大家聊聊。</button></div><div className="composer-shortcuts"><button onClick={()=>createPost()}><ImagePlus size={16}/>图片</button><button onClick={()=>createPost()}><Link2 size={16}/>链接</button>{openTopic('projects')&&<button onClick={()=>createPost(undefined,{topicId:'projects'})}><span aria-hidden="true">🚀</span>项目展示</button>}{openTopic('questions')&&<button onClick={()=>createPost(undefined,{topicId:'questions'})}><span aria-hidden="true">💡</span>提个问题</button>}</div></div><div className="feed-tabs">{[['latest','最新动态'],['following','正在关注'],['bookmarks','我的收藏']].map(([k,t])=><button key={k} className={feed===k?'selected':''} onClick={()=>{if(k==='latest'||needLogin())setFeed(k);}}>{t}</button>)}</div>{data.items?.length?data.items.map((p:Item)=><PostCard ctx={context} key={p.id} post={p}/>):<FeedEmptyState feed={feed} onBrowse={()=>setFeed('latest')} onCreate={()=>createPost()}/>}{data.nextCursor&&<button className="secondary load-more" disabled={busy||pageRefreshing||loadingMore} onClick={loadMore}>加载更多</button>}</>}
       {section==='posts'&&data.post&&<PostCard ctx={context} post={data.post} detail/>}
-      {section==='topics'&&!id&&<div className="page-content"><div className="section-intro"><span className="eyebrow">BOARDS</span><h2>找到你感兴趣的讨论</h2><p>每个板块聚焦一类话题。发帖时选对板块，更容易被对的人看到。</p></div><TopicDirectory topics={topics}/></div>}
+      {section==='topics'&&!id&&<><TopicStrip topics={topics} active="all"/><div className="page-content"><div className="section-intro"><span className="eyebrow">BOARDS</span><h2>找到你感兴趣的讨论</h2><p>每个板块聚焦一类话题。发帖时选对板块，更容易被对的人看到。</p></div><TopicDirectory topics={topics}/></div></>}
       {section==='topics'&&id&&data.topic&&<><TopicStrip topics={topics} active={data.topic.id}/><TopicHero topic={data.topic} onCompose={()=>createPost(undefined,data.topic.id==='introductions'?introductionDraft:{topicId:data.topic.id})}/>{data.items?.length?data.items.map((p:Item)=><PostCard ctx={context} key={p.id} post={p}/>):<div className="card"><Empty title="这个板块还没有帖子" detail={data.topic.canPost?'来发第一帖，开启这里的讨论。':'管理员发布的内容会出现在这里。'}/></div>}{data.nextCursor&&<button className="secondary load-more" disabled={busy||pageRefreshing||loadingMore} onClick={loadMore}>{loadingMore?'正在加载…':'加载更多'}</button>}</>}
       {section==='start'&&<OnboardingPage state={onboardingState} topics={topics} loginHref={loginUrl('/start')} onCompose={initial=>createPost(undefined,initial)} onDismiss={dismissOnboarding}/>}
       {section==='discover'&&<div className="page-content"><div className="section-intro"><span className="eyebrow">DISCOVER</span><h2>好项目，值得被发现。</h2><p>搜索实践经验、开源工具，还有一起动手的人。</p></div><div className="search-box large"><Search size={21}/><input aria-label="搜索社区" value={term} onChange={e=>setTerm(e.target.value)} maxLength={200} placeholder="搜索帖子、GitHub 项目、社群、活动"/></div><div className="filter-row"><select aria-label="内容类型" value={searchType} onChange={e=>searchNavigation.update({type:e.target.value as typeof searchType})}><option value="all">全部内容</option><option value="posts">帖子</option><option value="github">GitHub 项目</option><option value="communities">社群</option><option value="events">活动</option></select><input aria-label="城市筛选" placeholder="全部城市" maxLength={60} value={city} onChange={e=>searchNavigation.update({city:e.target.value})}/></div>{error&&<div className="error-banner"><p>{error}</p><button onClick={refresh}>重试搜索</button></div>}{!term.trim()?<div className="topic-cloud">{['Agent','开源','工作流','AI 编程','杭州','创作'].map(t=><button key={t} onClick={()=>setTerm(t)}>#{t}<ArrowUpRight size={16}/></button>)}</div>:(loading||!identityReady)&&!data.posts?<div className="loading" role="status"><span className="spinner"/>正在搜索…</div>:<>{data.posts?.map((p:Item)=><PostCard ctx={context} key={p.id} post={p}/>)}{data.nextCursor&&searchPages<MAX_SEARCH_PAGES&&<button className="secondary load-more" disabled={busy||pageRefreshing||loadingMore} onClick={loadMore}>{loadingMore?'正在加载…':'加载更多'}</button>}{!!data.communities?.length&&communityCards(data.communities)}{!!data.events?.length&&eventCards(data.events)}{!error&&!loading&&!pageRefreshing&&!data.posts?.length&&!data.communities?.length&&!data.events?.length&&<Empty title="没有找到相关内容" detail="试试其他关键词，或去发布一个问题。"/>}</>}</div>}
@@ -251,7 +251,23 @@ function Composer({ctx}:{ctx:Item & {communities:Item[]}}){
   const key=useRef(crypto.randomUUID());
   const [uploadProgress,setUploadProgress]=useState({current:0,total:0});
   const uploadRequest=useRef<AbortController|null>(null),submitting=useRef(false),imageInput=useRef<HTMLInputElement>(null),videoInput=useRef<HTMLInputElement>(null);
+  const [dragActive,setDragActive]=useState(false),dragDepth=useRef(0);
   useEffect(()=>()=>{uploadRequest.current?.abort();uploadRequest.current=null;},[]);
+  const locked=busy||uploading;
+  const carriesFiles=(transfer:DataTransfer|null)=>!!transfer&&Array.from(transfer.types).includes('Files');
+  function addFiles(files:File[]){
+    if(!files.length)return;
+    const videos=files.filter(file=>isVideoMime(file.type)),images=files.filter(file=>file.type.startsWith('image/'));
+    if(videos.length&&images.length){setError('图片和视频不能同时发布，请分开添加。');return;}
+    if(videos.length){void upload(videos,'video');return;}
+    if(images.length){void upload(images,'image');return;}
+    setError('只支持 JPG、PNG、WebP、GIF 图片，或 MP4、WebM 视频。');
+  }
+  function dragEnter(event:DragEvent<HTMLFormElement>){if(!carriesFiles(event.dataTransfer))return;event.preventDefault();dragDepth.current++;setDragActive(true);}
+  function dragOver(event:DragEvent<HTMLFormElement>){if(!carriesFiles(event.dataTransfer))return;event.preventDefault();event.dataTransfer.dropEffect=locked?'none':'copy';}
+  function dragLeave(event:DragEvent<HTMLFormElement>){if(!carriesFiles(event.dataTransfer))return;dragDepth.current=Math.max(0,dragDepth.current-1);if(!dragDepth.current)setDragActive(false);}
+  function drop(event:DragEvent<HTMLFormElement>){if(!carriesFiles(event.dataTransfer))return;event.preventDefault();dragDepth.current=0;setDragActive(false);if(!locked)addFiles(Array.from(event.dataTransfer.files));}
+  function paste(event:ClipboardEvent<HTMLTextAreaElement>){const files=Array.from(event.clipboardData?.files||[]).filter(file=>file.type.startsWith('image/'));if(files.length&&!locked){event.preventDefault();addFiles(files);}}
   const detectedLinks=extractWebUrls(links);
   const hasVideo=media.some(m=>isVideoMime(m.mime));
   async function upload(files:File[],kind:'image'|'video'){
@@ -296,23 +312,31 @@ function Composer({ctx}:{ctx:Item & {communities:Item[]}}){
     finally{submitting.current=false;}
   }
   const selectedTopic=!communityId&&topicId?topics.find((topic:Item)=>topic.id===topicId):null;
-  return <Modal title={original?'引用转发':selectedTopic?`发布到「${selectedTopic.name}」`:'分享一个新发现'} onClose={()=>setModal('')}><form onSubmit={submit}>
+  const pickImages=()=>imageInput.current?.click(),pickVideo=()=>videoInput.current?.click();
+  return <Modal title={original?'引用转发':selectedTopic?`发布到「${selectedTopic.name}」`:'分享一个新发现'} onClose={()=>setModal('')}><form onSubmit={submit} onDragEnter={dragEnter} onDragOver={dragOver} onDragLeave={dragLeave} onDrop={drop}>
     <div className="composer-author"><Avatar image={me?.image} name={me?.name}/><div><strong>{me?.name}</strong><select aria-label="发布范围" value={communityId} onChange={e=>{setCommunityId(e.target.value);if(e.target.value)setTopicId('');}}><option value="">公开动态</option>{communities.filter(c=>c.membership_status==='active').map(c=><option key={c.id} value={c.id}>{c.visibility==='private'?'🔒 ':''}{c.name}</option>)}</select></div></div>
-    {!communityId&&topics.length>0&&<TopicPicker topics={topics} value={topicId} onChange={setTopicId} isAdmin={me?.role==='admin'} disabled={busy||uploading}/>}
+    {!communityId&&topics.length>0&&<TopicPicker topics={topics} value={topicId} onChange={setTopicId} isAdmin={me?.role==='admin'} disabled={locked}/>}
     <input className="title-input" aria-label="标题" placeholder="标题（可选，项目展示和提问建议填写）" value={title} onChange={e=>{setTitle(e.target.value);setError('');}} maxLength={120}/>
-    <textarea className="write-area" aria-label="动态内容" placeholder="最近用 AI 做了什么？分享作品、开源项目，或一个值得讨论的问题…" value={body} onChange={e=>{setBody(e.target.value);setError('');}} maxLength={10000} autoFocus={!title}/>
+    <textarea className="write-area" aria-label="动态内容" placeholder="最近用 AI 做了什么？分享作品、开源项目，或一个值得讨论的问题…" value={body} onChange={e=>{setBody(e.target.value);setError('');}} onPaste={paste} maxLength={10000} autoFocus={!title}/>
     {original&&<div className="quote"><strong>{original.author?.name}</strong><p>{original.body}</p></div>}
+    {hasVideo
+      ?media.map(m=><div className={`${videoStyles.videoPreview} ${dragActive?'drop-target':''}`} key={m.id}><div className={videoStyles.previewHeading}><strong>待发布视频</strong><button type="button" className="text-button danger" disabled={locked} onClick={()=>{setMedia([]);setError('');}}>移除视频</button></div><UploadedVideo src={m.url} mime={m.mime} label="待发布视频预览"/></div>)
+      :media.length>0
+        ?<div className={`media-tray ${dragActive?'drop-target':''}`}><ImageOrderEditor images={media.map(m=>({id:m.id,url:m.url,filename:m.filename}))} disabled={locked} onMove={moveImage} onRemove={imageId=>{if(uploadRequest.current||submitting.current||busy)return;setMedia(current=>current.filter(image=>image.id!==imageId));setError('');}}/>{media.length<9&&<button type="button" className="upload-button" disabled={locked} onClick={pickImages}><ImagePlus size={18}/>继续添加图片（{media.length}/9），也可以拖进来或粘贴</button>}</div>
+        :<div className={`dropzone ${dragActive?'active':''}`}>
+          <UploadCloud size={24} aria-hidden="true"/>
+          {dragActive?<p>松开鼠标，添加到这条动态</p>:<p><button type="button" className="text-button" disabled={locked} onClick={pickImages}>选择图片</button> 或 <button type="button" className="text-button" disabled={locked} onClick={pickVideo}>选择视频</button>，也可以把文件拖到这里，或直接粘贴截图</p>}
+          <small>最多 9 张图片（每张 10 MB），或 1 个 MP4 / WebM 视频（50 MB）；图片和视频不能同时发布</small>
+        </div>}
+    {media.length>0&&!hasVideo&&<label className="checkbox privacy-choice"><input type="checkbox" checked={imageAnalysisConsent} onChange={e=>setImageAnalysisConsent(e.target.checked)}/><span>允许将本次图片交给配置的 AI 服务提取文字和描述（可选，默认关闭；关闭仍可提交图片审核）。请勿上传身份证、医疗等私密资料。<Link href="/privacy" target="_blank">了解处理方式</Link></span></label>}
     <Field label="分享链接或分享文案（可选）"><textarea rows={2} value={links} onChange={e=>{setLinks(e.target.value);setError('');}} maxLength={10000} placeholder="粘贴网址，或抖音、小红书的整段分享文案"/></Field>
     {detectedLinks.length>0&&<div className="composer-links"><span>已识别 {detectedLinks.length} 个链接</span><ul>{detectedLinks.slice(0,5).map(url=><li key={url}>{url}</li>)}</ul></div>}
-    {hasVideo?media.map(m=><div className={videoStyles.videoPreview} key={m.id}><div className={videoStyles.previewHeading}><strong>待发布视频</strong><button type="button" className="text-button danger" disabled={busy||uploading} onClick={()=>{setMedia([]);setError('');}}>移除视频</button></div><UploadedVideo src={m.url} mime={m.mime} label="待发布视频预览"/></div>):media.length>0&&<ImageOrderEditor images={media.map(m=>({id:m.id,url:m.url,filename:m.filename}))} disabled={busy||uploading} onMove={moveImage} onRemove={imageId=>{if(uploadRequest.current||submitting.current||busy)return;setMedia(current=>current.filter(image=>image.id!==imageId));setError('');}}/>}
-    {media.length>0&&!hasVideo&&<label className="checkbox privacy-choice"><input type="checkbox" checked={imageAnalysisConsent} onChange={e=>setImageAnalysisConsent(e.target.checked)}/><span>允许将本次图片交给配置的 AI 服务提取文字和描述（可选，默认关闭；关闭仍可提交图片审核）。请勿上传身份证、医疗等私密资料。<Link href="/privacy" target="_blank">了解处理方式</Link></span></label>}
-    <p className="moderation-submit-notice">{hasVideo?'视频需管理员人工审核，通过后按所选范围展示。':'文字和图片通过安全检查后展示。文字和图片会交给已配置的阿里云内容安全服务检测，与可选的图片文字提取用途不同。'}<Link href="/privacy" target="_blank">查看说明</Link></p>
-    <p className={videoStyles.help}>图片可一次多选，最多 9 张。上传后可拖动调整顺序，按预览顺序发布。也可单独添加 1 个 MP4 / WebM 视频（最大 50 MiB），图片和视频不能混选。</p>
     {uploading&&<div className={videoStyles.uploadProgress} role="status"><span>正在上传 {uploadProgress.current}/{uploadProgress.total}，请稍候…</span><button type="button" className="text-button" onClick={cancelUpload}>取消上传</button></div>}
     {error&&<p className="composer-error" role="alert">{error}</p>}
-    <div className={`form-footer ${videoStyles.footer}`}><div className={videoStyles.uploadActions}><button type="button" className="upload-button" disabled={busy||uploading} onClick={()=>imageInput.current?.click()}><ImagePlus size={20}/>多选图片</button><button type="button" className="upload-button" disabled={busy||uploading} onClick={()=>videoInput.current?.click()}><Video size={20}/>添加视频</button></div><button type="submit" className="primary" disabled={busy||uploading}>{busy?'发布中…':'发布'}{communityId?'到社群':''}<ArrowUpRight size={17}/></button></div>
-    <input ref={imageInput} className={videoStyles.fileInput} type="file" aria-label="选择帖子图片" accept="image/png,image/jpeg,image/webp,image/gif" multiple disabled={busy||uploading} onChange={event=>{const files=Array.from(event.currentTarget.files||[]);event.currentTarget.value='';void upload(files,'image');}}/>
-    <input ref={videoInput} className={videoStyles.fileInput} type="file" aria-label="选择帖子视频" accept="video/mp4,video/webm" disabled={busy||uploading} onChange={event=>{const files=Array.from(event.currentTarget.files||[]);event.currentTarget.value='';void upload(files,'video');}}/>
+    <p className="moderation-submit-notice">{hasVideo?'视频需管理员人工审核，通过后按所选范围展示。':'文字、图片和链接通过安全检查后展示。'}<Link href="/privacy" target="_blank">查看说明</Link></p>
+    <div className="composer-footer"><div className="composer-tools"><button type="button" className="icon-btn" aria-label="添加图片" title="添加图片" disabled={locked||hasVideo} onClick={pickImages}><ImagePlus size={20}/></button><button type="button" className="icon-btn" aria-label="添加视频" title="添加视频" disabled={locked||media.length>0} onClick={pickVideo}><Video size={20}/></button></div><button type="submit" className="primary" disabled={locked}>{busy?'发布中…':'发布'}{communityId?'到社群':''}<ArrowUpRight size={17}/></button></div>
+    <input ref={imageInput} className={videoStyles.fileInput} type="file" aria-label="选择帖子图片" accept="image/png,image/jpeg,image/webp,image/gif" multiple disabled={locked} onChange={event=>{const files=Array.from(event.currentTarget.files||[]);event.currentTarget.value='';void upload(files,'image');}}/>
+    <input ref={videoInput} className={videoStyles.fileInput} type="file" aria-label="选择帖子视频" accept="video/mp4,video/webm" disabled={locked} onChange={event=>{const files=Array.from(event.currentTarget.files||[]);event.currentTarget.value='';void upload(files,'video');}}/>
   </form></Modal>;
 }
 
